@@ -28,8 +28,8 @@ from googleapiclient.discovery import build
 APOLLO_API_KEY = os.environ.get("APOLLO_API_KEY", "")
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-SEARCH_URL = "https://api.apollo.io/api/v1/mixed_people/api_search"
-ENRICH_URL = "https://api.apollo.io/api/v1/people/bulk_match"
+SEARCH_URL = "https://api.apollo.io/v1/mixed_people/search"
+ENRICH_URL = "https://api.apollo.io/v1/people/bulk_match"
 
 APOLLO_HEADERS = {
     "Content-Type": "application/json",

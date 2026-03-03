@@ -17,9 +17,9 @@ import config
 
 logger = logging.getLogger(__name__)
 
-SEARCH_URL = "https://api.apollo.io/api/v1/mixed_people/api_search"
-ENRICH_URL = "https://api.apollo.io/api/v1/people/match"
-BULK_ENRICH_URL = "https://api.apollo.io/api/v1/people/bulk_match"
+SEARCH_URL = "https://api.apollo.io/v1/mixed_people/search"
+ENRICH_URL = "https://api.apollo.io/v1/people/match"
+BULK_ENRICH_URL = "https://api.apollo.io/v1/people/bulk_match"
 
 HEADERS = {
     "Content-Type": "application/json",
