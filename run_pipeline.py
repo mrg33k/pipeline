@@ -230,78 +230,114 @@ def mode_full(db, max_emails, dry_run, log_file):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def mode_rewrite(db, max_emails, dry_run, log_file):
-    """Rewrite existing Gmail drafts with the latest email prompt/tone."""
+    """
+    Rewrite existing Gmail drafts with the latest email prompt/tone.
+    Pulls drafts DIRECTLY from Gmail — no dependency on contacts_history.json.
+    Identifies outreach drafts by subject line pattern.
+    """
     logger = logging.getLogger("pipeline.rewrite")
 
-    drafted = db.get_drafted_contacts()
-    if not drafted:
-        print("No drafted contacts found in the database. Nothing to rewrite.")
+    # In dry-run mode, default to 3 drafts for a quick comparison preview
+    limit = max_emails if not dry_run else min(max_emails, 3)
+
+    divider("Connecting to Gmail and fetching outreach drafts...")
+    outreach_drafts = gmail_drafter.get_outreach_drafts(max_results=200)
+
+    if not outreach_drafts:
+        print("No outreach drafts found in Gmail.")
+        print("Outreach drafts are identified by subject lines like 'quick question for ...' or 'video for ...'")
         return
 
-    # Limit
-    to_rewrite = drafted[:max_emails]
-    logger.info(f"Found {len(drafted)} drafted contacts, rewriting {len(to_rewrite)}")
+    to_rewrite = outreach_drafts[:limit]
+    logger.info(f"Found {len(outreach_drafts)} outreach drafts, processing {len(to_rewrite)}")
 
-    divider(f"REWRITING {len(to_rewrite)} EMAILS")
+    if dry_run:
+        divider(f"DRY RUN: Showing BEFORE/AFTER for {len(to_rewrite)} drafts (no changes saved)")
+    else:
+        divider(f"REWRITING {len(to_rewrite)} DRAFTS IN GMAIL")
 
-    rewritten = []
-    for i, contact in enumerate(to_rewrite):
-        # Build a profile dict from the stored contact data
+    rewritten_count = 0
+    failed_count = 0
+
+    for i, draft_info in enumerate(to_rewrite):
+        draft_id = draft_info["draft_id"]
+        to_email = draft_info["to_email"]
+        company = draft_info["company"]
+        first_name = draft_info["first_name"]
+        old_body = draft_info["body_text"]
+        subject = draft_info["subject"]
+
+        # Build a minimal profile for the email writer
+        # We extract what we can from the draft itself
         profile = {
-            "apollo_id": contact["id"],
-            "first_name": contact.get("first_name", ""),
-            "last_name": contact.get("last_name", ""),
-            "email": contact.get("email", ""),
-            "title": contact.get("title", ""),
-            "company_name": contact.get("company", ""),
-            "company_industry": contact.get("industry", ""),
-            "company_city": contact.get("city", ""),
-            "company_state": contact.get("state", ""),
-            "company_domain": contact.get("domain", ""),
+            "apollo_id": to_email,  # use email as ID since we may not have Apollo ID
+            "first_name": first_name,
+            "last_name": "",
+            "email": to_email,
+            "title": "",
+            "company_name": company,
+            "company_industry": "",
+            "company_city": "Phoenix",  # default to Phoenix area
+            "company_state": "AZ",
+            "company_domain": "",
         }
 
-        logger.info(f"Rewriting {i + 1}/{len(to_rewrite)}: {profile['first_name']} at {profile['company_name']}")
+        logger.info(f"Processing {i + 1}/{len(to_rewrite)}: {to_email} ({company})")
 
         # Write new email
-        email = email_writer.write_email(profile)
-        new_body = email["body"]
-        new_subject = email["subject"]
+        new_email = email_writer.write_email(profile)
+        new_body = new_email["body"]
+        new_subject = new_email["subject"]
 
-        old_body = contact.get("emailed_body", "")
-        print(f"\n  [{i + 1}] {profile['first_name']} {profile['last_name']} <{profile['email']}>")
-        print(f"      Company: {profile['company_name']}")
-        print(f"      Old draft ID: {contact.get('draft_id', 'N/A')}")
+        # ── Print before/after comparison ──────────────────────────────
+        print(f"\n--- DRAFT {i + 1} of {len(to_rewrite)} ---")
+        print(f"To:      {to_email}")
+        print(f"Company: {company}")
+        print(f"Subject: {subject}")
+        print()
+        print("BEFORE:")
+        for line in old_body.split("\n"):
+            print(f"  {line}")
+        print()
+        print("AFTER:")
+        for line in new_body.split("\n"):
+            print(f"  {line}")
 
         if dry_run:
-            print(f"      NEW EMAIL:")
-            for line in new_body.split("\n"):
-                print(f"        {line}")
+            print()
+            print("  [DRY RUN — no changes made to Gmail]")
+            continue
+
+        # ── Replace the draft in Gmail ──────────────────────────────────
+        updated = gmail_drafter.update_draft(draft_id, to_email, new_subject, new_body)
+        if updated:
+            rewritten_count += 1
+            new_id = updated.get("id", draft_id)
+            print(f"  [OK] Draft updated -> {new_id}")
+            # Update contacts_history.json if this contact is tracked
+            if db.is_known(to_email):
+                db.update_draft(to_email, new_id, new_body)
         else:
-            # Delete old draft and create new one
-            old_draft_id = contact.get("draft_id", "")
-            if old_draft_id:
-                gmail_drafter.delete_draft(old_draft_id)
-                logger.info(f"  Deleted old draft: {old_draft_id}")
+            failed_count += 1
+            print(f"  [FAIL] Could not update draft")
 
-            new_draft = gmail_drafter.create_draft(profile["email"], new_subject, new_body)
-            if new_draft:
-                db.update_draft(contact["id"], new_draft["id"], new_body)
-                print(f"      [OK] New draft: {new_draft['id']}")
-            else:
-                print(f"      [FAIL] Could not create new draft")
-
-        rewritten.append({"profile": profile, "subject": new_subject, "body": new_body})
-
-    db.log_run("rewrite", len(rewritten))
-    db.save()
+    if not dry_run:
+        db.log_run("rewrite", rewritten_count)
+        db.save()
 
     print()
     print("=" * 60)
-    print("  REWRITE COMPLETE")
+    if dry_run:
+        print("  REWRITE DRY RUN COMPLETE")
+    else:
+        print("  REWRITE COMPLETE")
     print("=" * 60)
-    print(f"  Drafts rewritten: {len(rewritten)}")
-    print(f"  Log file:         {log_file}")
-    print_db_stats(db)
+    print(f"  Outreach drafts found: {len(outreach_drafts)}")
+    print(f"  Drafts processed:      {len(to_rewrite)}")
+    if not dry_run:
+        print(f"  Successfully updated:  {rewritten_count}")
+        print(f"  Failed:                {failed_count}")
+    print(f"  Log file:              {log_file}")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
