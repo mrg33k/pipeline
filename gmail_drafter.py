@@ -1,6 +1,6 @@
 from __future__ import annotations
 """
-Gmail API client for creating draft emails.
+Gmail API client for creating, updating, and deleting draft emails.
 Uses OAuth2 credentials with refresh token.
 Creates DRAFTS only, never sends.
 """
@@ -20,9 +20,16 @@ import config
 
 logger = logging.getLogger(__name__)
 
+# Cache the service to avoid re-authenticating on every call
+_service_cache = None
+
 
 def _get_gmail_service():
     """Build and return an authenticated Gmail API service."""
+    global _service_cache
+    if _service_cache is not None:
+        return _service_cache
+
     # Load tokens
     with open(config.GMAIL_TOKENS_PATH, "r") as f:
         token_data = json.load(f)
@@ -60,21 +67,15 @@ def _get_gmail_service():
             json.dump(new_token_data, f, indent=2)
         logger.info("Token refreshed and saved.")
 
-    service = build("gmail", "v1", credentials=creds)
-    return service
+    _service_cache = build("gmail", "v1", credentials=creds)
+    return _service_cache
 
 
-def create_draft(to_email: str, subject: str, body_text: str) -> dict | None:
-    """
-    Create a Gmail draft with HTML body (plain text email + HTML signature).
-    Returns the draft resource or None on failure.
-    """
-    service = _get_gmail_service()
-
+def _build_message(to_email: str, subject: str, body_text: str) -> str:
+    """Build a MIME message and return base64url-encoded raw string."""
     # Convert plain text body to HTML (preserve line breaks)
     body_html = body_text.replace("\n", "<br>\n")
 
-    # Build full HTML email
     full_html = f"""<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#222222;line-height:1.5;">
 {body_html}
 {config.EMAIL_SIGNATURE_HTML}
@@ -86,13 +87,26 @@ def create_draft(to_email: str, subject: str, body_text: str) -> dict | None:
     message["subject"] = subject
 
     # Plain text fallback
-    plain_part = MIMEText(body_text + "\n\nCheers,\nPatrik Matheson\nDigital Strategy\nVideo Marketing | Ahead of Market\n602.373.2164\naheadofmarket.com", "plain")
+    plain_part = MIMEText(
+        body_text + "\n\nCheers,\nPatrik Matheson\nDigital Strategy\n"
+        "Video Marketing | Ahead of Market\n602.373.2164\naheadofmarket.com",
+        "plain",
+    )
     html_part = MIMEText(full_html, "html")
 
     message.attach(plain_part)
     message.attach(html_part)
 
-    raw = base64.urlsafe_b64encode(message.as_bytes()).decode("utf-8")
+    return base64.urlsafe_b64encode(message.as_bytes()).decode("utf-8")
+
+
+def create_draft(to_email: str, subject: str, body_text: str) -> dict | None:
+    """
+    Create a Gmail draft with HTML body + signature.
+    Returns the draft resource dict or None on failure.
+    """
+    service = _get_gmail_service()
+    raw = _build_message(to_email, subject, body_text)
 
     try:
         draft = service.users().drafts().create(
@@ -104,6 +118,54 @@ def create_draft(to_email: str, subject: str, body_text: str) -> dict | None:
     except Exception as e:
         logger.error(f"Failed to create draft for {to_email}: {e}")
         return None
+
+
+def delete_draft(draft_id: str) -> bool:
+    """Delete a Gmail draft by ID. Returns True on success."""
+    service = _get_gmail_service()
+    try:
+        service.users().drafts().delete(userId="me", id=draft_id).execute()
+        logger.info(f"Draft deleted: {draft_id}")
+        return True
+    except Exception as e:
+        logger.warning(f"Failed to delete draft {draft_id}: {e}")
+        return False
+
+
+def update_draft(draft_id: str, to_email: str, subject: str, body_text: str) -> dict | None:
+    """
+    Update an existing Gmail draft with new content.
+    Returns the updated draft resource or None on failure.
+    """
+    service = _get_gmail_service()
+    raw = _build_message(to_email, subject, body_text)
+
+    try:
+        draft = service.users().drafts().update(
+            userId="me",
+            id=draft_id,
+            body={"message": {"raw": raw}}
+        ).execute()
+        logger.info(f"Draft updated: {draft_id} -> {to_email} ({subject})")
+        return draft
+    except Exception as e:
+        logger.warning(f"Failed to update draft {draft_id}, will try delete+create: {e}")
+        # Fallback: delete old and create new
+        delete_draft(draft_id)
+        return create_draft(to_email, subject, body_text)
+
+
+def list_drafts(max_results: int = 100) -> list[dict]:
+    """List Gmail drafts. Returns list of draft summary dicts."""
+    service = _get_gmail_service()
+    try:
+        result = service.users().drafts().list(userId="me", maxResults=max_results).execute()
+        drafts = result.get("drafts", [])
+        logger.info(f"Found {len(drafts)} drafts in Gmail")
+        return drafts
+    except Exception as e:
+        logger.error(f"Failed to list drafts: {e}")
+        return []
 
 
 def create_drafts_batch(emails: list[dict]) -> list[dict]:

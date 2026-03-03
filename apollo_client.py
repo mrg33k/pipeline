@@ -17,9 +17,9 @@ import config
 
 logger = logging.getLogger(__name__)
 
-SEARCH_URL = "https://api.apollo.io/v1/mixed_people/search"
-ENRICH_URL = "https://api.apollo.io/v1/people/match"
-BULK_ENRICH_URL = "https://api.apollo.io/v1/people/bulk_match"
+SEARCH_URL = "https://api.apollo.io/api/v1/mixed_people/api_search"
+ENRICH_URL = "https://api.apollo.io/api/v1/people/match"
+BULK_ENRICH_URL = "https://api.apollo.io/api/v1/people/bulk_match"
 
 HEADERS = {
     "Content-Type": "application/json",
@@ -46,6 +46,8 @@ def search_by_keyword(keyword: str, page: int = 1, per_page: int = 50) -> list:
     }
 
     resp = requests.post(SEARCH_URL, json=payload, headers=HEADERS, timeout=30)
+    if not resp.ok:
+        logger.error(f"Apollo search error {resp.status_code}: {resp.text[:500]}")
     resp.raise_for_status()
     data = resp.json()
     total = data.get("total_entries", 0)
@@ -94,6 +96,8 @@ def enrich_person(person_id: str) -> dict | None:
     payload = {"id": person_id}
     logger.info(f"Enriching person: {person_id}")
     resp = requests.post(ENRICH_URL, json=payload, headers=HEADERS, timeout=30)
+    if not resp.ok:
+        logger.error(f"Apollo enrich error {resp.status_code}: {resp.text[:500]}")
     resp.raise_for_status()
     data = resp.json()
     person = data.get("person")
@@ -117,6 +121,8 @@ def enrich_batch(person_ids: list[str]) -> list[dict]:
 
         logger.info(f"Bulk enriching {len(batch)} people (batch {i // 10 + 1})")
         resp = requests.post(BULK_ENRICH_URL, json=payload, headers=HEADERS, timeout=60)
+        if not resp.ok:
+            logger.error(f"Apollo bulk enrich error {resp.status_code}: {resp.text[:500]}")
         resp.raise_for_status()
         data = resp.json()
 
