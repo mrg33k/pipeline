@@ -12,6 +12,7 @@ much better results than a single broad search with no keywords.
 import requests
 import logging
 import time
+import re
 
 import config
 
@@ -20,6 +21,7 @@ logger = logging.getLogger(__name__)
 SEARCH_URL = "https://api.apollo.io/api/v1/mixed_people/api_search"
 ENRICH_URL = "https://api.apollo.io/api/v1/people/match"
 BULK_ENRICH_URL = "https://api.apollo.io/api/v1/people/bulk_match"
+EMAIL_LOOKUP_URL = "https://api.apollo.io/v1/people/match"
 
 HEADERS = {
     "Content-Type": "application/json",
@@ -56,7 +58,32 @@ def search_by_keyword(keyword: str, page: int = 1, per_page: int = 50) -> list:
     return people
 
 
-def search_all_pages(max_pages: int = 1) -> list:
+def _build_keyword_list(daily_focus: str = "") -> list[str]:
+    """
+    Build ordered keyword list for Apollo search.
+    If a daily focus is provided, search it first, then defaults.
+    """
+    defaults = list(config.INDUSTRY_KEYWORDS)
+    focus = (daily_focus or "").strip()
+    if not focus:
+        return defaults
+
+    # Allow comma/slash-separated focus phrases, while preserving full phrase fallback.
+    focus_parts = [p.strip() for p in re.split(r"[,/]+", focus) if p.strip()]
+    if not focus_parts:
+        focus_parts = [focus]
+
+    seen = set()
+    ordered = []
+    for keyword in focus_parts + defaults:
+        norm = keyword.lower()
+        if norm not in seen:
+            seen.add(norm)
+            ordered.append(keyword)
+    return ordered
+
+
+def search_all_pages(max_pages: int = 1, daily_focus: str = "") -> list:
     """
     Run targeted keyword searches across all configured industry keywords.
     Deduplicates by Apollo person ID. Returns a flat list of unique people.
@@ -65,7 +92,9 @@ def search_all_pages(max_pages: int = 1) -> list:
     all_people = []
     seen_ids = set()
 
-    keywords = config.INDUSTRY_KEYWORDS
+    keywords = _build_keyword_list(daily_focus)
+    if daily_focus:
+        logger.info(f"Daily focus: '{daily_focus}'")
     logger.info(f"Running {len(keywords)} keyword searches across {len(config.ORGANIZATION_LOCATIONS)} locations")
 
     for keyword in keywords:
@@ -106,6 +135,38 @@ def enrich_person(person_id: str) -> dict | None:
     else:
         logger.warning(f"  -> No email found for {person_id}")
     return person
+
+
+def lookup_by_email(email: str) -> dict:
+    """
+    Free Apollo lookup by email.
+    Returns the matched person dict, or {} when not found or on error.
+    """
+    email = (email or "").strip()
+    if not email:
+        return {}
+
+    payload = {"email": email}
+    lookup_headers = {**HEADERS, "X-Api-Key": config.APOLLO_API_KEY}
+    try:
+        resp = requests.post(EMAIL_LOOKUP_URL, json=payload, headers=lookup_headers, timeout=30)
+        if resp.status_code == 404:
+            return {}
+        if not resp.ok:
+            logger.warning(f"Apollo email lookup error {resp.status_code}: {resp.text[:300]}")
+            return {}
+        data = resp.json()
+    except requests.RequestException as e:
+        logger.warning(f"Apollo email lookup request failed for {email}: {e}")
+        return {}
+    except ValueError:
+        logger.warning(f"Apollo email lookup returned invalid JSON for {email}")
+        return {}
+
+    person = data.get("person") if isinstance(data, dict) else None
+    if isinstance(person, dict) and person:
+        return person
+    return {}
 
 
 def enrich_batch(person_ids: list[str]) -> list[dict]:

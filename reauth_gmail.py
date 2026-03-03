@@ -15,8 +15,10 @@ What it does:
 Requirements:
     pip install google-auth-oauthlib google-auth-httplib2 google-api-python-client
 
-The script requests only the 'gmail.compose' scope, which allows creating
-and managing drafts but cannot read your inbox or send emails on its own.
+The script requests:
+- 'gmail.compose' (create/manage drafts)
+- 'gmail.settings.basic' (read account signature settings)
+It cannot read your inbox body or send emails on its own.
 """
 
 import json
@@ -38,8 +40,17 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CLIENT_SECRET_PATH = os.path.join(SCRIPT_DIR, "client_secret.json")
 TOKENS_PATH = os.path.join(SCRIPT_DIR, "gmail_tokens.json")
 
-# Only request the compose scope — cannot read inbox or send
-SCOPES = ["https://www.googleapis.com/auth/gmail.compose"]
+# Compose + settings scope (used to read the account default signature)
+SCOPES = [
+    "https://www.googleapis.com/auth/gmail.compose",
+    "https://www.googleapis.com/auth/gmail.settings.basic",
+]
+
+
+def _has_required_scopes(token_data: dict) -> bool:
+    granted = set((token_data.get("scope") or "").split())
+    required = set(SCOPES)
+    return required.issubset(granted)
 
 
 def main():
@@ -82,11 +93,14 @@ def main():
                 client_secret=installed["client_secret"],
                 scopes=SCOPES,
             )
-            if creds.valid:
+            if creds.valid and _has_required_scopes(token_data):
                 print("Existing tokens are valid. No re-authentication needed.")
                 print("Delete gmail_tokens.json and re-run this script to force a new login.")
                 return
-            elif creds.expired and creds.refresh_token:
+            if creds.valid and not _has_required_scopes(token_data):
+                print("Existing tokens are valid but missing required scopes.")
+                print("Starting OAuth flow to grant gmail.settings.basic...")
+            elif creds.expired and creds.refresh_token and _has_required_scopes(token_data):
                 print("Tokens are expired. Attempting to refresh...")
                 creds.refresh(Request())
                 _save_tokens(creds, token_data)

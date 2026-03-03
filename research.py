@@ -1,91 +1,105 @@
 from __future__ import annotations
 """
-Lightweight research on each enriched contact.
-Uses Apollo data + a quick web scrape of the company homepage.
+Lightweight company research utility.
+Given a website URL, extract one verified short fact about what the company does.
 """
 
 import logging
+import re
+from html.parser import HTMLParser
+
 import requests
-from bs4 import BeautifulSoup
+from openai import OpenAI
 
 logger = logging.getLogger(__name__)
+client = OpenAI()
 
 
-def research_contact(person: dict) -> dict:
+class _TextExtractor(HTMLParser):
+    """Extract visible text while skipping script/style content."""
+
+    def __init__(self):
+        super().__init__()
+        self.parts: list[str] = []
+        self._skip_tag: str | None = None
+
+    def handle_starttag(self, tag, attrs):  # noqa: ARG002
+        if tag in {"script", "style"}:
+            self._skip_tag = tag
+
+    def handle_endtag(self, tag):
+        if self._skip_tag == tag:
+            self._skip_tag = None
+
+    def handle_data(self, data):
+        if self._skip_tag is None and data:
+            self.parts.append(data)
+
+    def text(self) -> str:
+        return " ".join(self.parts)
+
+
+def _strip_html(html: str) -> str:
+    parser = _TextExtractor()
+    parser.feed(html)
+    text = parser.text()
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def get_company_fact(website_url: str) -> str:
     """
-    Build a research profile for one enriched contact.
-    Combines Apollo data with a quick homepage scrape.
-    Returns a dict with all context needed for email writing.
+    Return one short verified company fact, or "" on any failure.
+    Never raises.
     """
-    org = person.get("organization", {}) or {}
-
-    profile = {
-        "apollo_id": person.get("id", ""),
-        "first_name": person.get("first_name", ""),
-        "last_name": person.get("last_name", ""),
-        "full_name": person.get("name", ""),
-        "email": person.get("email", ""),
-        "title": person.get("title", ""),
-        "headline": person.get("headline", ""),
-        "linkedin_url": person.get("linkedin_url", ""),
-        "city": person.get("city", ""),
-        "state": person.get("state", ""),
-        "company_name": org.get("name", ""),
-        "company_domain": org.get("primary_domain", "") or org.get("website_url", ""),
-        "company_industry": org.get("industry", ""),
-        "company_city": org.get("city", ""),
-        "company_state": org.get("state", ""),
-        "company_description": org.get("short_description", "") or org.get("seo_description", ""),
-        "company_employee_count": org.get("estimated_num_employees", ""),
-        "company_founded_year": org.get("founded_year", ""),
-        "company_linkedin": org.get("linkedin_url", ""),
-        "homepage_snippet": "",
-    }
-
-    # Quick homepage scrape for extra context
-    domain = profile["company_domain"]
-    if domain and not domain.startswith("http"):
-        domain = f"https://{domain}"
-
-    if domain:
-        profile["homepage_snippet"] = _scrape_homepage(domain)
-
-    return profile
-
-
-def _scrape_homepage(url: str) -> str:
-    """
-    Grab the first ~500 chars of visible text from a company homepage.
-    Fails silently on any error.
-    """
-    try:
-        resp = requests.get(url, timeout=8, headers={
-            "User-Agent": "Mozilla/5.0 (compatible; AOM-Research/1.0)"
-        })
-        if resp.status_code != 200:
-            return ""
-        soup = BeautifulSoup(resp.text, "html.parser")
-
-        # Remove script/style
-        for tag in soup(["script", "style", "nav", "header", "footer"]):
-            tag.decompose()
-
-        text = soup.get_text(separator=" ", strip=True)
-        # Take first 500 chars
-        snippet = text[:500].strip()
-        return snippet
-    except Exception as e:
-        logger.debug(f"Homepage scrape failed for {url}: {e}")
+    website_url = (website_url or "").strip()
+    if not website_url:
         return ""
 
+    if not website_url.startswith(("http://", "https://")):
+        website_url = f"https://{website_url}"
 
-def research_batch(enriched_people: list[dict]) -> list[dict]:
-    """Research all enriched contacts. Returns list of profile dicts."""
-    profiles = []
-    for i, person in enumerate(enriched_people):
-        logger.info(f"Researching {i + 1}/{len(enriched_people)}: "
-                     f"{person.get('first_name', '')} {person.get('last_name', '')} "
-                     f"at {(person.get('organization') or {}).get('name', 'Unknown')}")
-        profile = research_contact(person)
-        profiles.append(profile)
-    return profiles
+    try:
+        response = requests.get(website_url, timeout=5)
+        response.raise_for_status()
+    except requests.RequestException as e:
+        logger.info(f"Website fetch failed for {website_url}: {e}")
+        return ""
+
+    extracted_website_text = _strip_html(response.text)[:1500]
+    if len(extracted_website_text) < 50:
+        return ""
+
+    try:
+        completion = client.chat.completions.create(
+            model="gpt-4.1-nano",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You extract one simple fact from website text. "
+                        "Return ONLY a short phrase (under 10 words) describing what this company does or who they serve. "
+                        'Examples of good responses: "pool service software for contractors" / "Mexican restaurant" / '
+                        '"custom home builder" / "hotel staffing agency" / "yoga studio" / "commercial roofing company". '
+                        "Do not return a sentence. Do not add opinions. Do not add adjectives like "
+                        '"great" or "leading". Just the core fact. If you cannot determine what they do, '
+                        "return exactly: UNKNOWN"
+                    ),
+                },
+                {"role": "user", "content": extracted_website_text},
+            ],
+            temperature=0,
+            max_tokens=40,
+        )
+        fact = (completion.choices[0].message.content or "").strip()
+    except Exception as e:  # pylint: disable=broad-except
+        logger.info(f"OpenAI fact extraction failed for {website_url}: {e}")
+        return ""
+
+    if fact == "UNKNOWN":
+        return ""
+
+    if len(fact.split()) > 15:
+        return ""
+
+    return fact
+

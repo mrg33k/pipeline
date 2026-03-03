@@ -20,6 +20,7 @@ Options:
 import argparse
 import logging
 import os
+import re
 import sys
 import time
 from datetime import datetime
@@ -107,19 +108,42 @@ def validate_config(mode):
     return True
 
 
+def prompt_daily_focus(mode: str) -> str:
+    """
+    Ask for a simple optional daily outreach focus in full mode.
+    Returns empty string when skipped or unavailable.
+    """
+    if mode != "full":
+        return ""
+    if not sys.stdin.isatty():
+        return ""
+
+    print("Optional daily focus")
+    print("  Who do you feel like reaching out to today?")
+    print("  Example: restaurant owners in Scottsdale")
+    focus = input("  Focus (press Enter to skip): ").strip()
+    print()
+    return focus
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # MODE 1: FULL RUN
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def mode_full(db, max_emails, dry_run, log_file):
+def mode_full(db, max_emails, dry_run, log_file, daily_focus: str = ""):
     """Full pipeline: Apollo search -> LLM filter -> enrich -> research -> write -> draft."""
     logger = logging.getLogger("pipeline.full")
     already_contacted = db.get_all_ids()
     logger.info(f"Previously tracked: {db.contacted_count()} contacts")
+    if daily_focus:
+        logger.info(f"Daily outreach focus: {daily_focus}")
 
     # ── Step 1: Apollo Free Search ───────────────────────────────────────
     divider("STEP 1: Apollo People Search (free, no credits)")
-    candidates = apollo_client.search_all_pages(max_pages=config.APOLLO_SEARCH_PAGES)
+    candidates = apollo_client.search_all_pages(
+        max_pages=config.APOLLO_SEARCH_PAGES,
+        daily_focus=daily_focus,
+    )
 
     if not candidates:
         logger.error("No candidates found from Apollo search. Exiting.")
@@ -129,7 +153,12 @@ def mode_full(db, max_emails, dry_run, log_file):
 
     # ── Step 2: LLM Filter & Rank ────────────────────────────────────────
     divider("STEP 2: LLM Filtering & Ranking")
-    top_ids = llm_filter.filter_and_rank(candidates, already_contacted, max_picks=max_emails)
+    top_ids = llm_filter.filter_and_rank(
+        candidates,
+        already_contacted,
+        max_picks=max_emails,
+        daily_focus=daily_focus,
+    )
 
     if not top_ids:
         logger.error("LLM returned no prospects. Exiting.")
@@ -147,10 +176,56 @@ def mode_full(db, max_emails, dry_run, log_file):
 
     logger.info(f"Successfully enriched {len(enriched)} contacts with emails")
 
-    # ── Step 4: Research Each Contact ────────────────────────────────────
-    divider(f"STEP 4: Researching {len(enriched)} contacts")
-    profiles = research.research_batch(enriched)
-    logger.info(f"Research complete for {len(profiles)} contacts")
+    # ── Step 4: Build Profiles + Company Fact Research ───────────────────
+    divider(f"STEP 4: Building profiles and researching {len(enriched)} contacts")
+    profiles = []
+    for i, person in enumerate(enriched):
+        org = person.get("organization", {}) or {}
+        profile = {
+            "apollo_id": person.get("id", ""),
+            "first_name": person.get("first_name", ""),
+            "last_name": person.get("last_name", ""),
+            "full_name": person.get("name", ""),
+            "email": person.get("email", ""),
+            "title": person.get("title", ""),
+            "headline": person.get("headline", ""),
+            "linkedin_url": person.get("linkedin_url", ""),
+            "city": person.get("city", ""),
+            "state": person.get("state", ""),
+            "company_name": org.get("name", ""),
+            "company_domain": org.get("primary_domain", "") or org.get("website_url", ""),
+            "company_industry": org.get("industry", ""),
+            "company_city": org.get("city", ""),
+            "company_state": org.get("state", ""),
+            "company_description": org.get("short_description", "") or org.get("seo_description", ""),
+            "company_employee_count": org.get("estimated_num_employees", ""),
+            "company_founded_year": org.get("founded_year", ""),
+            "company_linkedin": org.get("linkedin_url", ""),
+            "homepage_snippet": "",
+        }
+
+        logger.info(
+            f"Researching {i + 1}/{len(enriched)}: "
+            f"{profile.get('first_name', '')} {profile.get('last_name', '')} "
+            f"at {profile.get('company_name', 'Unknown')}"
+        )
+
+        # Research step — get one fact about the company
+        company_fact = ""
+        website = (org.get("website_url", "") or "").strip()
+        if website:
+            company_fact = research.get_company_fact(website)
+            if company_fact:
+                logger.info(f"  Research fact: {company_fact}")
+            else:
+                logger.info("  No research fact found, using generic opener")
+        else:
+            logger.info("  No website found, using generic opener")
+
+        profile["company_fact"] = company_fact
+        profiles.append(profile)
+
+    logger.info(f"Profile build + research complete for {len(profiles)} contacts")
 
     # Save enriched contacts to DB immediately (so --mode draft can use them later)
     for profile in profiles:
@@ -281,42 +356,104 @@ def mode_rewrite(db, max_emails, dry_run, log_file):
 
     rewritten_count = 0
     failed_count = 0
+    apollo_lookup_cache = {}
+
+    def _clean_text(value) -> str:
+        """Normalize nullable/non-string values to a safe stripped string."""
+        if isinstance(value, str):
+            return value.strip()
+        return ""
 
     for i, draft_info in enumerate(to_rewrite):
         draft_id = draft_info["draft_id"]
         to_email = draft_info["to_email"]
-        first_name = draft_info["first_name"]
         old_body = draft_info["body_text"]
-        raw_signature = draft_info.get("raw_signature", "")  # preserve original signature
+
+        # Apollo-first lookup by recipient email (cached), then draft greeting, then fallback.
+        email_key = (to_email or "").strip().lower()
+        if email_key in apollo_lookup_cache:
+            apollo_person = apollo_lookup_cache[email_key]
+        else:
+            apollo_person = apollo_client.lookup_by_email(to_email)
+            apollo_lookup_cache[email_key] = apollo_person
+
+        apollo_org = (apollo_person.get("organization", {}) or {}) if apollo_person else {}
+        apollo_first_name = _clean_text(apollo_person.get("first_name", "") if apollo_person else "")
+        header_first_name = _clean_text(draft_info.get("first_name", ""))
+        if not header_first_name:
+            to_name = _clean_text(draft_info.get("to_name", ""))
+            if to_name:
+                header_candidate = to_name.split()[0]
+                if re.match(r"^[A-Za-z][A-Za-z'\-]*$", header_candidate):
+                    header_first_name = header_candidate
+        body_first_name = _extract_first_name_from_draft_body(old_body)
+        first_name = apollo_first_name or header_first_name or body_first_name or "there"
+        last_name = _clean_text(apollo_person.get("last_name", "") if apollo_person else "")
+
         old_subject = draft_info["subject"]
 
-        # Look up company from DB if available (more reliable than subject parsing)
+        # DB fallback fields (used when Apollo lookup has gaps).
         db_contact = db.get_contact_by_email(to_email)
         if db_contact:
-            company = db_contact.get("company", draft_info.get("company", ""))
-            industry = db_contact.get("industry", "")
-            city = db_contact.get("city", "")
-            state = db_contact.get("state", "")
-            if not first_name:
-                first_name = db_contact.get("first_name", "")
+            db_company = _clean_text(db_contact.get("company", ""))
+            db_industry = _clean_text(db_contact.get("industry", ""))
+            db_city = _clean_text(db_contact.get("city", ""))
+            db_state = _clean_text(db_contact.get("state", ""))
+            db_title = _clean_text(db_contact.get("title", ""))
+            db_domain = _clean_text(db_contact.get("domain", ""))
         else:
-            company = draft_info.get("company", "")
-            industry = ""
-            city = ""
-            state = ""
+            db_company = ""
+            db_industry = ""
+            db_city = ""
+            db_state = ""
+            db_title = ""
+            db_domain = ""
+
+        company = (
+            _clean_text(apollo_org.get("name", ""))
+            or db_company
+            or _clean_text(draft_info.get("company", ""))
+        )
+        industry = _clean_text(apollo_org.get("industry", "")) or db_industry
+        city = (
+            _clean_text(apollo_org.get("city", ""))
+            or _clean_text(apollo_person.get("city", "") if apollo_person else "")
+            or db_city
+        )
+        state = (
+            _clean_text(apollo_org.get("state", ""))
+            or _clean_text(apollo_person.get("state", "") if apollo_person else "")
+            or db_state
+        )
+        title = _clean_text(apollo_person.get("title", "") if apollo_person else "") or db_title
+        domain = (
+            _clean_text(apollo_org.get("primary_domain", ""))
+            or _clean_text(apollo_org.get("website_url", ""))
+            or db_domain
+        )
+
+        company_fact = ""
+        website = _clean_text(apollo_org.get("website_url", ""))
+        if website:
+            company_fact = research.get_company_fact(website)
+            if company_fact:
+                logger.info(f"  Research fact: {company_fact}")
+            else:
+                logger.info("  No research fact found, using generic opener")
 
         # Build a minimal profile for the email writer
         profile = {
             "apollo_id": to_email,
             "first_name": first_name,
-            "last_name": "",
+            "last_name": last_name,
             "email": to_email,
-            "title": "",
+            "title": title,
             "company_name": company,
             "company_industry": industry,
             "company_city": city or "Phoenix",
             "company_state": state or "AZ",
-            "company_domain": "",
+            "company_domain": domain,
+            "company_fact": company_fact,
         }
 
         logger.info(f"Processing {i + 1}/{len(to_rewrite)}: {first_name} at {company} <{to_email}>")
@@ -342,20 +479,13 @@ def mode_rewrite(db, max_emails, dry_run, log_file):
         print("AFTER:")
         for line in new_body.split("\n"):
             print(f"  {line}")
-        if raw_signature:
-            print()
-            print(f"  [Signature preserved: {len(raw_signature)} chars]")
-
         if dry_run:
             print()
             print("  [DRY RUN — no changes made to Gmail]")
             continue
 
-        # ── Replace the draft in Gmail (preserving original signature) ───────
-        updated = gmail_drafter.update_draft(
-            draft_id, to_email, new_subject, new_body,
-            signature_override=raw_signature,
-        )
+        # ── Replace the draft in Gmail ───────────────────────────────────────
+        updated = gmail_drafter.update_draft(draft_id, to_email, new_subject, new_body)
         if updated:
             rewritten_count += 1
             new_id = updated.get("id", draft_id)
@@ -507,6 +637,16 @@ def do_import(db, csv_path):
 # Helpers
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def _extract_first_name_from_draft_body(body_text: str) -> str:
+    """
+    Extract greeting first name from a draft body that starts with:
+      Hi [Name],
+    Returns empty string when missing/invalid (e.g., "Hi ," or "Hi,").
+    """
+    match = re.match(r"^\s*Hi\s+([A-Za-z][A-Za-z'\-]*)\s*,", body_text or "")
+    return match.group(1) if match else ""
+
+
 def _print_email_previews(emails, max_show=5):
     """Print preview of generated emails."""
     print("\n--- Email Previews ---")
@@ -585,10 +725,11 @@ Examples:
     if max_emails == 0 and mode in ("full", "draft"):
         max_emails = config.MAX_DAILY_EMAILS  # default 25 for these modes
     # For rewrite mode, 0 means unlimited (handled inside mode_rewrite)
+    daily_focus = prompt_daily_focus(mode)
 
     # ── Run the selected mode ────────────────────────────────────────
     if mode == "full":
-        mode_full(db, max_emails, args.dry_run, log_file)
+        mode_full(db, max_emails, args.dry_run, log_file, daily_focus=daily_focus)
     elif mode == "rewrite":
         mode_rewrite(db, max_emails, args.dry_run, log_file)
     elif mode == "draft":

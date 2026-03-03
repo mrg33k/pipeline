@@ -25,6 +25,8 @@ logger = logging.getLogger(__name__)
 
 # Cache the service to avoid re-authenticating on every call
 _service_cache = None
+_signature_cache = None
+_signature_loaded = False
 
 # Body content phrases that identify an outreach email (fallback detection)
 OUTREACH_BODY_PHRASES = [
@@ -63,6 +65,8 @@ def _get_gmail_service():
     client_id = installed["client_id"]
     client_secret = installed["client_secret"]
     token_uri = installed.get("token_uri", "https://oauth2.googleapis.com/token")
+    token_scope_str = (token_data.get("scope") or "").strip()
+    token_scopes = token_scope_str.split() if token_scope_str else list(config.GMAIL_SCOPES)
 
     creds = Credentials(
         token=token_data.get("access_token"),
@@ -70,7 +74,7 @@ def _get_gmail_service():
         token_uri=token_uri,
         client_id=client_id,
         client_secret=client_secret,
-        scopes=["https://www.googleapis.com/auth/gmail.compose"],
+        scopes=token_scopes,
     )
 
     if creds.expired or not creds.valid:
@@ -88,6 +92,45 @@ def _get_gmail_service():
 
     _service_cache = build("gmail", "v1", credentials=creds)
     return _service_cache
+
+
+def _get_account_signature_html() -> str:
+    """
+    Fetch and cache the Gmail account default signature HTML.
+    Returns empty string when unavailable.
+    """
+    global _signature_cache, _signature_loaded
+    if _signature_loaded:
+        return _signature_cache or ""
+
+    _signature_loaded = True
+    _signature_cache = ""
+    try:
+        service = _get_gmail_service()
+        data = service.users().settings().sendAs().list(userId="me").execute()
+        send_as_entries = data.get("sendAs", []) or []
+        if not send_as_entries:
+            return ""
+
+        selected = None
+        sender = (config.SENDER_EMAIL or "").strip().lower()
+        for entry in send_as_entries:
+            if entry.get("isPrimary"):
+                selected = entry
+                break
+        if selected is None and sender:
+            for entry in send_as_entries:
+                if (entry.get("sendAsEmail", "") or "").strip().lower() == sender:
+                    selected = entry
+                    break
+        if selected is None:
+            selected = send_as_entries[0]
+
+        _signature_cache = (selected.get("signature", "") or "").strip()
+    except Exception as e:
+        logger.info(f"Could not fetch Gmail account signature from settings: {e}")
+
+    return _signature_cache or ""
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -166,25 +209,6 @@ def _extract_body_from_payload(payload: dict) -> tuple[str, str]:
     return plain, html
 
 
-def _split_body_and_signature(text: str) -> tuple[str, str]:
-    """
-    Split email text into (email_body, signature_block).
-
-    The signature starts after the sign-off line ("Best," or "Cheers,").
-    Everything after the sign-off is considered the signature.
-
-    Returns (body_including_signoff, signature_after_signoff).
-    If no sign-off is found, returns (full_text, "").
-    """
-    for marker in ["Best,", "Cheers,"]:
-        idx = text.find(marker)
-        if idx != -1:
-            body = text[: idx + len(marker)].strip()
-            sig = text[idx + len(marker):].strip()
-            return body, sig
-    return text.strip(), ""
-
-
 def _extract_first_name_from_body(body_text: str) -> str:
     """
     Parse the recipient's first name from the email greeting.
@@ -216,7 +240,7 @@ def get_outreach_drafts(max_results: int = 200, known_emails: set = None) -> lis
     2. FALLBACK: If known_emails is empty/None, check body content for outreach phrases.
 
     Returns a list of dicts with:
-        draft_id, subject, to_email, to_name, first_name, company, body_text, raw_signature
+        draft_id, subject, to_email, to_name, first_name, company, body_text
     """
     if known_emails is None:
         known_emails = set()
@@ -293,9 +317,6 @@ def get_outreach_drafts(max_results: int = 200, known_emails: set = None) -> lis
         if not first_name and body_text:
             first_name = _extract_first_name_from_body(body_text)
 
-        # Split body into email text + signature block
-        body_clean, raw_signature = _split_body_and_signature(body_text)
-
         # Extract company from subject line (best-effort, may be empty)
         company = _extract_company_from_subject(subject)
 
@@ -306,8 +327,7 @@ def get_outreach_drafts(max_results: int = 200, known_emails: set = None) -> lis
             "to_name": to_name,
             "first_name": first_name,
             "company": company,
-            "body_text": body_clean,       # email text only (no signature)
-            "raw_signature": raw_signature, # original signature block (preserved as-is)
+            "body_text": body_text.strip(),
         })
 
     logger.info(f"Found {len(outreach_drafts)} outreach drafts to rewrite")
@@ -329,42 +349,19 @@ def _extract_company_from_subject(subject: str) -> str:
 # Draft creation & management
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def _build_message(to_email: str, subject: str, body_text: str, signature_override: str = "") -> str:
-    """
-    Build a MIME message and return base64url-encoded raw string.
+def _build_message(to_email: str, subject: str, body_text: str) -> str:
+    """Build a MIME message and return base64url-encoded raw string."""
+    signature_html = _get_account_signature_html()
+    signature_plain = _html_to_text(signature_html) if signature_html else ""
 
-    If signature_override is provided (non-empty), it is appended as plain text
-    after the email body instead of the default HTML signature. This preserves
-    the original signature from a rewritten draft.
-
-    For new drafts (no override), the full HTML signature from config is used.
-    """
-    if signature_override:
-        # Rewrite mode: preserve the original signature as-is (plain text)
-        full_plain = body_text + "\n\n" + signature_override
-        full_html = (
-            '<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;'
-            'color:#222222;line-height:1.5;">\n'
-            + body_text.replace("\n", "<br>\n")
-            + "<br><br>\n"
-            + signature_override.replace("\n", "<br>\n")
-            + "\n</div>"
-        )
-    else:
-        # New draft: use the full HTML signature from config
-        full_plain = (
-            body_text
-            + "\n\nCheers,\nPatrik Matheson\nDigital Strategy\n"
-            "Video Marketing | Ahead of Market\n602.373.2164\naheadofmarket.com"
-        )
-        full_html = (
-            '<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;'
-            'color:#222222;line-height:1.5;">\n'
-            + body_text.replace("\n", "<br>\n")
-            + "\n"
-            + config.EMAIL_SIGNATURE_HTML
-            + "\n</div>"
-        )
+    full_plain = body_text + (f"\n\n{signature_plain}" if signature_plain else "")
+    full_html = (
+        '<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;'
+        'color:#222222;line-height:1.5;">\n'
+        + body_text.replace("\n", "<br>\n")
+        + (f"<br><br>\n{signature_html}" if signature_html else "")
+        + "\n</div>"
+    )
 
     message = MIMEMultipart("alternative")
     message["to"] = to_email
@@ -406,15 +403,13 @@ def delete_draft(draft_id: str) -> bool:
         return False
 
 
-def update_draft(draft_id: str, to_email: str, subject: str, body_text: str,
-                 signature_override: str = "") -> dict | None:
+def update_draft(draft_id: str, to_email: str, subject: str, body_text: str) -> dict | None:
     """
     Update an existing Gmail draft with new content.
-    If signature_override is provided, it is preserved in the updated draft.
     Falls back to delete+create if the update API call fails.
     """
     service = _get_gmail_service()
-    raw = _build_message(to_email, subject, body_text, signature_override=signature_override)
+    raw = _build_message(to_email, subject, body_text)
     try:
         draft = service.users().drafts().update(
             userId="me",

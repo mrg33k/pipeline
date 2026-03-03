@@ -38,6 +38,12 @@ OPENAI_API_KEY=your_openai_key_here
 
 Go to the [Google Cloud Console](https://console.developers.google.com/apis/api/gmail.googleapis.com/overview?project=618386231675) and enable the Gmail API for your project. The OAuth credentials (`client_secret.json` and `gmail_tokens.json`) should already be in the project directory.
 
+If drafts fail with an insufficient-scope error (or account signature is missing in API-created drafts), refresh OAuth tokens:
+
+```bash
+python3 reauth_gmail.py
+```
+
 ### 4. Run the Pipeline
 
 ```bash
@@ -108,7 +114,7 @@ Edit `config.py` to change:
 - **Industry keywords** (`INDUSTRY_KEYWORDS`)
 - **Company size** (`EMPLOYEE_RANGES`)
 - **Daily batch size** (`MAX_DAILY_EMAILS`)
-- **Email signature** (`EMAIL_SIGNATURE_HTML`)
+- **Sender name/email headers** (`SENDER_NAME`, `SENDER_EMAIL`)
 
 Edit `email_writer.py` to change:
 - Writing style rules

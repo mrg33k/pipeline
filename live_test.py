@@ -45,29 +45,6 @@ GMAIL_TOKENS_PATH = os.path.join(BASE_DIR, "gmail_tokens.json")
 SENDER_EMAIL = "hello@aom-inhouse.com"
 SENDER_NAME = "Patrik Matheson"
 
-SIGNATURE_HTML = """
-<br><br>
-<table cellpadding="0" cellspacing="0" border="0" style="font-family:Arial,Helvetica,sans-serif;font-size:13px;color:#333333;line-height:1.4;">
-  <tr>
-    <td style="padding-right:15px;vertical-align:top;">
-      <img src="https://aheadofmarket.com/cdn/shop/files/patrik-headshot.jpg" alt="Patrik Matheson" width="90" height="90" style="border-radius:50%;display:block;" />
-    </td>
-    <td style="vertical-align:top;">
-      <strong style="font-size:14px;color:#111111;">Patrik Matheson</strong><br>
-      Digital Strategy<br>
-      Video Marketing | Ahead of Market<br><br>
-      <span style="font-size:12px;">
-        <a href="tel:6023732164" style="color:#333333;text-decoration:none;">602.373.2164</a><br>
-        <a href="mailto:Patrikmatheson@icloud.com" style="color:#1a73e8;text-decoration:none;">Patrikmatheson@icloud.com</a><br>
-        <a href="https://aheadofmarket.com" style="color:#1a73e8;text-decoration:none;">aheadofmarket.com</a>
-      </span>
-      <br><br>
-      <a href="https://aheadofmarket.com" style="display:inline-block;padding:6px 14px;background-color:#111111;color:#ffffff;text-decoration:none;border-radius:4px;font-size:12px;font-weight:bold;">Visit My Website</a>
-    </td>
-  </tr>
-</table>
-"""
-
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
@@ -348,7 +325,7 @@ EMAIL STRUCTURE:
 4. Close with a low-pressure invitation to connect.
 
 Sign off with: Cheers,
-(The signature block is added separately.)
+(No signature block is injected by the program.)
 
 Keep the email to 4-6 short paragraphs. Under 150 words total. No subject line in the body. Address them by first name only."""
 
@@ -461,7 +438,6 @@ def create_gmail_drafts(emails):
         body_html = body_text.replace("\n", "<br>\n")
         full_html = f"""<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#222222;line-height:1.5;">
 {body_html}
-{SIGNATURE_HTML}
 </div>"""
 
         message = MIMEMultipart("alternative")
@@ -469,8 +445,7 @@ def create_gmail_drafts(emails):
         message["from"] = f"{SENDER_NAME} <{SENDER_EMAIL}>"
         message["subject"] = subject
 
-        plain_fallback = body_text + "\n\nCheers,\nPatrik Matheson\nDigital Strategy\nVideo Marketing | Ahead of Market\n602.373.2164\naheadofmarket.com"
-        message.attach(MIMEText(plain_fallback, "plain"))
+        message.attach(MIMEText(body_text, "plain"))
         message.attach(MIMEText(full_html, "html"))
 
         raw = base64.urlsafe_b64encode(message.as_bytes()).decode("utf-8")

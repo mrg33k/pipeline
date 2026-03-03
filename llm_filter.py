@@ -15,7 +15,12 @@ logger = logging.getLogger(__name__)
 client = OpenAI()  # uses OPENAI_API_KEY env var; base_url pre-configured
 
 
-def filter_and_rank(candidates: list[dict], already_contacted: set, max_picks: int = 25) -> list[str]:
+def filter_and_rank(
+    candidates: list[dict],
+    already_contacted: set,
+    max_picks: int = 25,
+    daily_focus: str = "",
+) -> list[str]:
     """
     Takes raw Apollo search results (free, no emails), filters out
     already-contacted people, then asks gpt-4.1-mini to pick the best
@@ -58,7 +63,7 @@ def filter_and_rank(candidates: list[dict], already_contacted: set, max_picks: i
     to_evaluate = with_email[:150]
 
     # Step 3: Ask the LLM to rank
-    prompt = _build_ranking_prompt(to_evaluate, max_picks)
+    prompt = _build_ranking_prompt(to_evaluate, max_picks, daily_focus=daily_focus)
 
     logger.info(f"Sending {len(to_evaluate)} candidates to LLM for ranking...")
     response = client.chat.completions.create(
@@ -91,8 +96,17 @@ def filter_and_rank(candidates: list[dict], already_contacted: set, max_picks: i
     return picked_ids[:max_picks]
 
 
-def _build_ranking_prompt(candidates: list[dict], max_picks: int) -> str:
+def _build_ranking_prompt(candidates: list[dict], max_picks: int, daily_focus: str = "") -> str:
     candidates_json = json.dumps(candidates, indent=None)
+    focus_text = (daily_focus or "").strip()
+    if focus_text:
+        focus_block = (
+            f"\nTODAY'S FOCUS FROM USER:\n"
+            f"- {focus_text}\n"
+            f"- Prioritize prospects matching this focus when quality is comparable.\n"
+        )
+    else:
+        focus_block = ""
 
     return f"""You are selecting cold outreach prospects for Ahead of Market (AOM), a video production studio in Phoenix, AZ.
 
@@ -102,6 +116,7 @@ AOM creates story-driven video content for web and social media. Their ideal cli
 - Company size: 11-200 employees
 - Decision makers: CEOs, Founders, Owners, CMOs, Marketing Directors/Managers
 - Businesses that would benefit from professional video content (brand videos, social content, event recaps, founder stories)
+{focus_block}
 
 From the following list of {len(candidates)} prospects, select the BEST {max_picks} for cold outreach. Prioritize:
 1. Title relevance (founders/owners/marketing leaders are best)

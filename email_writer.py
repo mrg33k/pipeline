@@ -26,42 +26,23 @@ EXACT FORMULA — each item gets its own paragraph with a blank line between the
 6. Sign off with just: Best,
 
 OPENER RULES (critical):
-The opener is ONLY an ice breaker. It just acknowledges they exist. Nothing more.
-
-GOOD openers — these work for ANY business type because they're vague and unchallengeable:
-- "I came across you guys recently."
-- "I've been seeing your name around lately."
-- "You guys came up on my radar recently."
-- "I came across your work the other day."
-- "Your name keeps coming up."
-- "I came across [Company] recently." (only if the name is short and natural-sounding)
-- "You guys have been on my radar for a bit."
-- "I came across [First name]'s work recently." (only if it sounds natural)
-
-BAD openers — NEVER use any of these:
-- "I walked past your spot" — too specific, might be wrong
-- "I drove by" — doesn't work for SaaS, nonprofits, remote businesses
-- "I noticed you guys on [street]" — never invent locations
-- "I was in [neighborhood]" — too specific
-- Any reference to a specific street, address, intersection, or neighborhood
-- Any reference to walking, driving, or being physically somewhere
-- "I checked out your website" — sounds researched, not natural
-- "From what I saw on your website" — outsider language
-- "It looks like you" — outsider language
-- Describing what the company does back to them
-
-VARIETY (critical): You MUST vary the opener. Never use the exact same opening sentence twice. Rotate through different phrasings:
-- "I came across you guys recently."
-- "I've been seeing your name around lately."
-- "You guys came up on my radar recently."
-- "I came across your work the other day."
-- "Your name keeps coming up."
-- "You guys have been on my radar for a bit."
-Pick a different one each time. Do not default to the same phrase.
+THE OPENER (first line after greeting):
+- If a "Verified fact" is provided in the context, write ONE short casual sentence that shows you're aware of what they do. Use the fact naturally. Examples:
+  - Fact: "Mexican restaurant" → "I've eaten at Los Portales a few times."
+  - Fact: "pool service software for contractors" → "I know you guys work in the pool service space."
+  - Fact: "commercial roofing company" → "I know you guys do roofing work around here."
+  - Fact: "yoga studio" → "I've seen your studio around town."
+- If NO fact is provided, use a simple generic opener like "I came across you guys recently." or "Your name came up recently."
+- NEVER invent details that are not in the verified fact.
+- NEVER mention their website, Google, LinkedIn, or how you found them.
+- NEVER describe their full business model or compliment them.
+- NEVER use specific street names, neighborhoods, or addresses.
+- Keep it to ONE sentence. Short. Casual.
 
 COMPANY NAME RULES:
 - NEVER use the company name if it is an abbreviation, acronym, or sounds corporate/unnatural (e.g. "LCRETW", "GTICL", "MREG", "CFJPOGP"). Use "you guys" instead.
 - Only use the company name if it's short and natural-sounding (like "Francine" or "Los Portales").
+- Never use long, formal company names in the opener.
 - NEVER describe what the company does or summarize their business.
 
 LOCATION RULES:
@@ -183,9 +164,12 @@ def _is_abbreviation(name: str) -> bool:
 
 def _build_context(profile: dict) -> str:
     """Build a minimal user prompt with only the data the LLM needs."""
-    first_name = profile.get("first_name", "there")
+    first_name = (profile.get("first_name") or "there").strip()
+    if not first_name:
+        first_name = "there"
     company = profile.get("company_name", "")
     industry = profile.get("company_industry", "")
+    company_fact = (profile.get("company_fact") or "").strip()
 
     # Company name note
     if company and (_is_abbreviation(company) or len(company) > 30):
@@ -201,14 +185,19 @@ def _build_context(profile: dict) -> str:
     else:
         company_note = "No company name available. Use 'you guys'."
 
+    fact_line = f"Verified fact about their company: {company_fact}\n" if company_fact else ""
+
     return (
         f"Write a cold outreach email to {first_name}.\n"
         f"Company: {company}\n"
         f"Industry: {industry}\n"
+        f"{fact_line}"
         f"{company_note}\n\n"
         f"IMPORTANT: Start with 'Hi {first_name},'\n"
-        f"IMPORTANT: The opener must be a simple, vague ice breaker. "
-        f"No walking, no driving, no streets, no neighborhoods, no physical locations.\n"
-        f"IMPORTANT: Do NOT describe what the company does.\n"
+        f"IMPORTANT: If a verified fact is provided, opener should use only that fact in one short casual sentence. "
+        f"If no verified fact is provided, use a generic opener.\n"
+        f"IMPORTANT: No walking, no driving, no streets, no neighborhoods, no physical locations. "
+        f"Do not mention website, Google, LinkedIn, or how you found them.\n"
+        f"IMPORTANT: NEVER invent details beyond the verified fact.\n"
         f"Follow the formula exactly."
     )
