@@ -1,12 +1,11 @@
+from __future__ import annotations
 """
-Uses gpt-4.1-mini to filter and rank the best prospects
+Uses gpt-4.1-mini to filter and rank the best 25 prospects
 from the free Apollo search results before spending enrichment credits.
 """
 
 import json
 import logging
-from typing import Optional
-
 from openai import OpenAI
 
 import config
@@ -16,16 +15,10 @@ logger = logging.getLogger(__name__)
 client = OpenAI()  # uses OPENAI_API_KEY env var; base_url pre-configured
 
 
-def filter_and_rank(
-    candidates: list[dict],
-    already_contacted: set,
-    max_picks: int = 25,
-    model: Optional[str] = None,
-    extra_directions: str = "",
-) -> list[str]:
+def filter_and_rank(candidates: list[dict], already_contacted: set, max_picks: int = 25) -> list[str]:
     """
     Takes raw Apollo search results (free, no emails), filters out
-    already-contacted people, then asks the LLM to pick the best
+    already-contacted people, then asks gpt-4.1-mini to pick the best
     prospects for Ahead of Market's video production services.
 
     Returns a list of Apollo person IDs (up to max_picks).
@@ -61,21 +54,21 @@ def filter_and_rank(
         logger.warning("No candidates with available emails.")
         return []
 
-    # Cap at 150 to keep token usage low
+    # Cap at 150 to keep token usage low (the LLM only needs to pick 25)
     to_evaluate = with_email[:150]
 
     # Step 3: Ask the LLM to rank
-    prompt = _build_ranking_prompt(to_evaluate, max_picks, extra_directions=extra_directions)
+    prompt = _build_ranking_prompt(to_evaluate, max_picks)
 
-    selected_model = (model or config.OPENAI_MODEL).strip()
-    logger.info(f"Sending {len(to_evaluate)} candidates to LLM for ranking with model={selected_model}...")
+    logger.info(f"Sending {len(to_evaluate)} candidates to LLM for ranking...")
     response = client.chat.completions.create(
-        model=selected_model,
+        model=config.OPENAI_MODEL,
         messages=[
             {"role": "system", "content": "You are a sales prospecting assistant. Return only valid JSON."},
             {"role": "user", "content": prompt},
         ],
-        max_completion_tokens=2000,
+        temperature=0.3,
+        max_tokens=2000,
     )
 
     raw = response.choices[0].message.content.strip()
@@ -98,10 +91,8 @@ def filter_and_rank(
     return picked_ids[:max_picks]
 
 
-def _build_ranking_prompt(candidates: list[dict], max_picks: int, extra_directions: str = "") -> str:
+def _build_ranking_prompt(candidates: list[dict], max_picks: int) -> str:
     candidates_json = json.dumps(candidates, indent=None)
-    extra = (extra_directions or "").strip()
-    extra_block = f"\n\nAdditional run-specific directions:\n{extra}" if extra else ""
 
     return f"""You are selecting cold outreach prospects for Ahead of Market (AOM), a video production studio in Phoenix, AZ.
 
@@ -115,7 +106,7 @@ AOM creates story-driven video content for web and social media. Their ideal cli
 From the following list of {len(candidates)} prospects, select the BEST {max_picks} for cold outreach. Prioritize:
 1. Title relevance (founders/owners/marketing leaders are best)
 2. Company name suggests a good industry fit
-3. Variety across different companies (do not pick multiple people from the same company){extra_block}
+3. Variety across different companies (do not pick multiple people from the same company)
 
 Return ONLY a JSON array of the selected person IDs, like: ["id1", "id2", ...]
 

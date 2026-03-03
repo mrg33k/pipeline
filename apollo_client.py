@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 Apollo.io API client.
 - People Search (free, no credits) to find prospects
@@ -11,7 +12,6 @@ much better results than a single broad search with no keywords.
 import requests
 import logging
 import time
-from typing import Optional
 
 import config
 
@@ -86,7 +86,7 @@ def search_all_pages(max_pages: int = 1) -> list:
     return all_people
 
 
-def enrich_person(person_id: str) -> Optional[dict]:
+def enrich_person(person_id: str) -> dict | None:
     """
     Enrich a single person by Apollo ID. Costs 1 credit.
     Returns full person data including email.

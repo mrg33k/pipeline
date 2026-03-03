@@ -189,7 +189,8 @@ Candidates:
             {"role": "system", "content": "You are a sales prospecting assistant. Return only a valid JSON array of IDs."},
             {"role": "user", "content": prompt},
         ],
-        max_completion_tokens=500,
+        temperature=0.2,
+        max_tokens=500,
     )
 
     raw = response.choices[0].message.content.strip()
@@ -390,7 +391,8 @@ def write_emails(profiles):
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": context},
             ],
-            max_completion_tokens=500,
+            temperature=0.7,
+            max_tokens=500,
         )
 
         body = response.choices[0].message.content.strip()

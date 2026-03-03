@@ -1,0 +1,322 @@
+{
+  "name": "AOM Cold Outreach Pipeline",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 8 * * 1-5"
+            }
+          ]
+        }
+      },
+      "id": "trigger-schedule",
+      "name": "Daily Trigger (8am Mon-Fri)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [0, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.apollo.io/api/v1/mixed_people/api_search",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-api-key",
+              "value": "={{ $env.APOLLO_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": {
+          "person_titles": ["CEO", "Founder", "Co-Founder", "Owner", "CMO", "VP Marketing", "Director of Marketing", "Marketing Manager"],
+          "person_seniorities": ["owner", "founder", "c_suite", "vp", "director", "manager"],
+          "organization_locations": [
+            "Phoenix, Arizona, United States",
+            "Scottsdale, Arizona, United States",
+            "Mesa, Arizona, United States",
+            "Tempe, Arizona, United States",
+            "Chandler, Arizona, United States",
+            "Glendale, Arizona, United States",
+            "Peoria, Arizona, United States"
+          ],
+          "organization_num_employees_ranges": ["11,50", "51,200"],
+          "q_keywords": "restaurant hospitality hotel fitness wellness real estate",
+          "per_page": 100,
+          "page": 1
+        }
+      },
+      "id": "apollo-search",
+      "name": "Apollo People Search (Free)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [220, 300],
+      "notes": "Free endpoint — no Apollo credits consumed. Returns obfuscated names and no emails."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract people array and filter out already-contacted IDs\nconst data = $input.first().json;\nconst people = data.people || [];\n\n// Format candidates for LLM ranking\nconst candidates = people.map((p, i) => ({\n  index: i,\n  id: p.id,\n  name: `${p.first_name || ''} ${p.last_name || ''}`.trim(),\n  title: p.title || '',\n  company: p.organization?.name || '',\n  industry: p.organization?.industry || '',\n  city: p.organization?.city || '',\n  employees: p.organization?.estimated_num_employees || ''\n}));\n\nreturn [{ json: { candidates, total: candidates.length } }];"
+      },
+      "id": "format-candidates",
+      "name": "Format Candidates",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [440, 300]
+    },
+    {
+      "parameters": {
+        "model": "gpt-4.1-mini",
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You are a prospect ranking assistant for Patrik Matheson at Ahead of Market, a video marketing studio in Phoenix, AZ.\n\nYour job: from the list of candidates, select the best 25 prospects for cold outreach. Prioritize:\n1. Direct business owners/founders/CEOs (not corporate middle management)\n2. Industries: hospitality, restaurants, fitness/wellness, real estate, events, construction, nonprofits\n3. Smaller companies (under 100 employees preferred)\n4. Avoid: staffing agencies, recruiters, consultants who sell to other businesses, large national chains\n\nReturn ONLY a JSON array of Apollo person IDs for the top 25 picks, in ranked order (best first).\nExample: [\"id1\", \"id2\", \"id3\"]\nNo explanation. No other text."
+            },
+            {
+              "role": "user",
+              "content": "=Rank these candidates and return the top 25 IDs:\n\n{{ JSON.stringify($json.candidates, null, 2) }}"
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0.3,
+          "maxTokens": 500
+        }
+      },
+      "id": "llm-filter",
+      "name": "LLM Filter & Rank Top 25",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1,
+      "position": [660, 300],
+      "notes": "Uses gpt-4.1-mini to rank candidates. One API call for all 25 — very cheap."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse the LLM response to extract the array of IDs\nconst raw = $input.first().json.message?.content || $input.first().json.text || '';\nlet ids = [];\ntry {\n  // Extract JSON array from the response\n  const match = raw.match(/\\[.*\\]/s);\n  if (match) {\n    ids = JSON.parse(match[0]);\n  }\n} catch (e) {\n  console.error('Failed to parse LLM response:', raw);\n}\n\nreturn [{ json: { selected_ids: ids.slice(0, 25) } }];"
+      },
+      "id": "parse-llm-ids",
+      "name": "Parse Selected IDs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [880, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.apollo.io/api/v1/people/bulk_match",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-api-key",
+              "value": "={{ $env.APOLLO_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={{ { details: $json.selected_ids.map(id => ({ id })) } }}"
+      },
+      "id": "apollo-enrich",
+      "name": "Apollo Bulk Enrichment (25 credits)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1100, 300],
+      "notes": "Costs 1 Apollo credit per person. Max 25 credits per daily run."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract enriched contacts with emails\nconst data = $input.first().json;\nconst matches = data.matches || [];\n\nconst contacts = matches\n  .filter(p => p && p.email)\n  .map(p => ({\n    first_name: p.first_name || '',\n    last_name: p.last_name || '',\n    email: p.email,\n    title: p.title || '',\n    company_name: p.organization?.name || '',\n    company_domain: p.organization?.primary_domain || '',\n    company_industry: p.organization?.industry || '',\n    company_city: p.organization?.city || '',\n    company_state: p.organization?.state || '',\n    company_description: p.organization?.short_description || '',\n    apollo_id: p.id\n  }));\n\nreturn contacts.map(c => ({ json: c }));"
+      },
+      "id": "extract-contacts",
+      "name": "Extract Contacts with Emails",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1320, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://{{ $json.company_domain }}",
+        "options": {
+          "timeout": 10000,
+          "response": {
+            "response": {
+              "responseFormat": "text"
+            }
+          }
+        }
+      },
+      "id": "scrape-homepage",
+      "name": "Scrape Company Homepage",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1540, 300],
+      "continueOnFail": true,
+      "notes": "Best-effort scrape. Continues even if the site is unreachable."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Strip HTML tags and extract a short text snippet from the homepage\nconst html = $input.first().json?.body || $input.first().json?.data || '';\nconst text = html\n  .replace(/<script[^>]*>[\\s\\S]*?<\\/script>/gi, '')\n  .replace(/<style[^>]*>[\\s\\S]*?<\\/style>/gi, '')\n  .replace(/<[^>]+>/g, ' ')\n  .replace(/\\s+/g, ' ')\n  .trim()\n  .slice(0, 300);\n\n// Merge with contact data from previous node\nconst contact = $('Extract Contacts with Emails').first().json;\n\nreturn [{ json: { ...contact, homepage_snippet: text } }];"
+      },
+      "id": "parse-homepage",
+      "name": "Parse Homepage Snippet",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1760, 300]
+    },
+    {
+      "parameters": {
+        "model": "gpt-4.1-mini",
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You write cold outreach emails for Patrik Matheson, who runs Ahead of Market, a small creative studio in the Phoenix, AZ area that does web and social video content for local businesses.\n\nWrite emails that sound exactly like a real person dashing off a quick note. Not a marketer. Not a salesperson. Patrik is a local who already knows this business and their work. Write from that perspective — familiar, not like an outsider who stumbled across their website.\n\nEXACT FORMULA — each item gets its own paragraph with a blank line between them:\n1. \"Hi [First name],\" — always start with Hi, never Dear or Hello\n2. One casual sentence acknowledging what they do. Write as if Patrik already knows their work firsthand. No \"I checked out your website\" or \"it looks like\" or \"from what I saw online\" — those sound like an outsider. Just a plain, familiar observation.\n3. One question asking if they already have someone handling their web/social stuff. Use the exact phrase \"web/social\" — not \"web and social\" or \"social media\" or any other variation.\n4. One soft sentence mentioning you had a couple ideas but didn't want to assume anything, so you're introducing yourself first.\n5. Offer to meet locally (say you're in the area) or hop on Zoom. Keep it low-pressure.\n6. Sign off with just: Best,\n\nFORMATTING:\n- Put a blank line between every paragraph/thought — exactly like the example below\n- No subject line in the body\n- No em dashes, no semicolons, no colons, no bullet points\n- Plain text only, no markdown\n\nRULES:\n- No elaborate descriptions of what Patrik does or what Ahead of Market offers\n- No specific service pitches, no video concept breakdowns\n- No outsider language: no \"I came across,\" \"I noticed,\" \"I saw on your website,\" \"it looks like,\" \"from what I can see\"\n- No filler phrases like \"I hope this email finds you well\"\n- No compliments like \"amazing\" or \"incredible\" — keep it plain and genuine\n- Under 80 words total (not counting the sign-off)\n\nEXAMPLE (match this tone, structure, and formatting exactly):\nHi Bryan,\n\nYou guys are doing great work helping hotels from what I saw on the website.\n\nAre you already working with someone on web/social stuff?\n\nI had a couple ideas for you guys, but I didn't want to assume anything, so I thought I'd introduce myself first. I'm in the area most of this week if you'd prefer to meet briefly, otherwise I'm happy to hop on Zoom as well.\n\nBest,"
+            },
+            {
+              "role": "user",
+              "content": "=Write a cold outreach email to {{ $json.first_name }} at {{ $json.company_name }}.\nBrief company context: {{ $json.homepage_snippet || $json.company_description || $json.company_industry }}\n\nKeep it casual, short, and human. Follow the formula exactly."
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0.8,
+          "maxTokens": 200
+        }
+      },
+      "id": "write-email",
+      "name": "Write Personalized Email",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1,
+      "position": [1980, 300],
+      "notes": "One API call per contact. Uses gpt-4.1-mini to minimize cost."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Prepare the final email data for Gmail draft creation\nconst contact = $('Parse Homepage Snippet').first().json;\nconst emailBody = $input.first().json.message?.content || $input.first().json.text || '';\n\nconst subject = `quick question for ${contact.company_name}`;\n\nreturn [{ json: {\n  to: contact.email,\n  subject: subject,\n  body: emailBody,\n  first_name: contact.first_name,\n  last_name: contact.last_name,\n  company: contact.company_name,\n  apollo_id: contact.apollo_id\n} }];"
+      },
+      "id": "prepare-draft",
+      "name": "Prepare Draft Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2200, 300]
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "subject": "={{ $json.subject }}",
+        "message": "={{ $json.body }}",
+        "toList": ["={{ $json.to }}"],
+        "options": {
+          "sendAt": "",
+          "appendAttribution": false
+        }
+      },
+      "id": "gmail-draft",
+      "name": "Create Gmail Draft",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2,
+      "position": [2420, 300],
+      "notes": "Creates a DRAFT only. Patrik reviews and sends manually."
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "value": "YOUR_GOOGLE_SHEET_ID_HERE",
+          "__rl": true,
+          "mode": "id"
+        },
+        "sheetName": {
+          "value": "Outreach Log",
+          "__rl": true,
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Date": "={{ new Date().toISOString().split('T')[0] }}",
+            "First Name": "={{ $json.first_name }}",
+            "Last Name": "={{ $json.last_name }}",
+            "Email": "={{ $json.to }}",
+            "Company": "={{ $json.company }}",
+            "Subject": "={{ $json.subject }}",
+            "Body": "={{ $json.body }}",
+            "Draft Created": "=true",
+            "Apollo ID": "={{ $json.apollo_id }}"
+          }
+        }
+      },
+      "id": "log-to-sheets",
+      "name": "Log to Google Sheets",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [2640, 300],
+      "notes": "Optional: logs each outreach to a Google Sheet for tracking. Add your Sheet ID above."
+    }
+  ],
+  "connections": {
+    "Daily Trigger (8am Mon-Fri)": {
+      "main": [[{ "node": "Apollo People Search (Free)", "type": "main", "index": 0 }]]
+    },
+    "Apollo People Search (Free)": {
+      "main": [[{ "node": "Format Candidates", "type": "main", "index": 0 }]]
+    },
+    "Format Candidates": {
+      "main": [[{ "node": "LLM Filter & Rank Top 25", "type": "main", "index": 0 }]]
+    },
+    "LLM Filter & Rank Top 25": {
+      "main": [[{ "node": "Parse Selected IDs", "type": "main", "index": 0 }]]
+    },
+    "Parse Selected IDs": {
+      "main": [[{ "node": "Apollo Bulk Enrichment (25 credits)", "type": "main", "index": 0 }]]
+    },
+    "Apollo Bulk Enrichment (25 credits)": {
+      "main": [[{ "node": "Extract Contacts with Emails", "type": "main", "index": 0 }]]
+    },
+    "Extract Contacts with Emails": {
+      "main": [[{ "node": "Scrape Company Homepage", "type": "main", "index": 0 }]]
+    },
+    "Scrape Company Homepage": {
+      "main": [[{ "node": "Parse Homepage Snippet", "type": "main", "index": 0 }]]
+    },
+    "Parse Homepage Snippet": {
+      "main": [[{ "node": "Write Personalized Email", "type": "main", "index": 0 }]]
+    },
+    "Write Personalized Email": {
+      "main": [[{ "node": "Prepare Draft Data", "type": "main", "index": 0 }]]
+    },
+    "Prepare Draft Data": {
+      "main": [[{ "node": "Create Gmail Draft", "type": "main", "index": 0 }]]
+    },
+    "Create Gmail Draft": {
+      "main": [[{ "node": "Log to Google Sheets", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "pinData": {}
+}

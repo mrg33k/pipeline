@@ -4,13 +4,7 @@ All settings, API keys, and constants in one place.
 """
 
 import os
-
-try:
-    from dotenv import load_dotenv
-except ImportError:
-    # Allow running without python-dotenv; environment vars can still be set externally.
-    def load_dotenv(*args, **kwargs):
-        return False
+from dotenv import load_dotenv
 
 # Load .env file if it exists
 load_dotenv()
@@ -80,15 +74,7 @@ APOLLO_SEARCH_PAGES = 3          # pages to pull from free search (300 results)
 APOLLO_SEARCH_PER_PAGE = 100     # max per page
 
 # ── OpenAI ────────────────────────────────────────────────────────────────────
-OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5")
-EVIDENCE_MODEL = os.environ.get("EVIDENCE_MODEL", "gpt-4.1-mini")
-JUDGE_MODEL = os.environ.get("JUDGE_MODEL", "gpt-4.1-mini")
-STYLE_EMBED_MODEL = os.environ.get("STYLE_EMBED_MODEL", "text-embedding-3-small")
-EVIDENCE_MAX_RETRIES = int(os.environ.get("EVIDENCE_MAX_RETRIES", "3"))
-EVIDENCE_TIMEOUT_SEC = int(os.environ.get("EVIDENCE_TIMEOUT_SEC", "20"))
-EVIDENCE_MAX_COMPLETION_TOKENS = int(os.environ.get("EVIDENCE_MAX_COMPLETION_TOKENS", "900"))
-EVIDENCE_MIN_CONFIDENCE = float(os.environ.get("EVIDENCE_MIN_CONFIDENCE", "0.40"))
-EVIDENCE_FAIL_FAST = os.environ.get("EVIDENCE_FAIL_FAST", "true").strip().lower() not in {"0", "false", "no"}
+OPENAI_MODEL = "gpt-4.1-mini"
 
 # ── Sender Info ───────────────────────────────────────────────────────────────
 SENDER_EMAIL = "hello@aom-inhouse.com"

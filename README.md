@@ -7,11 +7,10 @@ Automated cold outreach pipeline for Patrik Matheson at [Ahead of Market](https:
 1. **Apollo Search (free):** Runs targeted keyword searches across 10 industry categories in the Phoenix metro area. No credits consumed.
 2. **LLM Filtering:** Uses `gpt-4.1-mini` to rank and select the top 25 prospects from the search results.
 3. **Apollo Enrichment (25 credits):** Gets full contact details and email addresses for only the selected 25.
-4. **Research Card Build:** Collects website/LinkedIn/review signals and normalizes one `ResearchCard` per lead.
-5. **Intent-Anchor Rewrite Writing:** Uses `ResearchCard` + `IntentAnchorCard` to run one natural rewrite pass, then one targeted retry only if semantic anchors are missing.
-6. **Minimal Hard Checks:** Enforces greeting/signoff formatting, `web/social` ask, non-assumptive intent, soft nearby/Zoom close, truthful source claims, and `<=100` words.
-7. **Gmail Drafts:** Creates drafts in Gmail. You review and hit send manually.
-8. **CSV Export:** Saves a daily CSV of all contacts and emails for record keeping.
+4. **Company Research:** Scrapes each company's homepage for context to personalize the email.
+5. **Email Writing:** Generates personalized, Spartan-style emails using `gpt-4.1-mini` with strict style rules.
+6. **Gmail Drafts:** Creates drafts in Gmail. You review and hit send manually.
+7. **CSV Export:** Saves a daily CSV of all contacts and emails for record keeping.
 
 ## Setup
 
@@ -42,7 +41,7 @@ Go to the [Google Cloud Console](https://console.developers.google.com/apis/api/
 ### 4. Run the Pipeline
 
 ```bash
-# Full run: opens startup browser form, then search/filter/enrich/write/draft
+# Full run: search, filter, enrich, write, draft
 python3 run_pipeline.py
 
 # Dry run: everything except creating Gmail drafts
@@ -53,9 +52,6 @@ python3 run_pipeline.py --max 10
 
 # Skip draft creation (same as dry-run)
 python3 run_pipeline.py --skip-drafts
-
-# Skip browser UI and run directly from CLI/defaults
-python3 run_pipeline.py --no-ui
 ```
 
 ## Daily Usage
@@ -70,7 +66,6 @@ The pipeline will:
 - Generate up to 25 new drafts
 - Export a CSV to `daily_exports/`
 - Log everything to `logs/`
-- Let you adjust run-only AI directions, model, pages, and count in the startup browser form
 
 ## Credit Usage
 
@@ -87,13 +82,11 @@ Total Apollo cost: **25 credits/day** (well under the 100/day budget).
 ```
 outreach_pipeline/
 ├── run_pipeline.py       # Main entry point
-├── runtime_settings.py   # Per-run settings dataclass + validation
-├── startup_ui.py         # Local browser UI for startup run configuration
 ├── config.py             # All settings and constants
 ├── apollo_client.py      # Apollo API (search + enrichment)
 ├── llm_filter.py         # LLM-based prospect ranking
-├── research.py           # Context gatherer + normalized ResearchCard builder
-├── email_writer.py       # Single-pass writer from ResearchCard + minimal hard checks
+├── research.py           # Company homepage research
+├── email_writer.py       # Personalized email generation
 ├── gmail_drafter.py      # Gmail draft creation
 ├── csv_export.py         # Daily CSV export
 ├── contacts_db.py        # Contact history tracking
@@ -121,8 +114,3 @@ Edit `email_writer.py` to change:
 - Writing style rules
 - Banned words/phrases
 - Email structure and tone
-
-## Repo Notes
-
-- Recommended dev flow: run `--debug-writer --debug-writer-limit 3` first, then run rewrite/full pipeline.
-- Production drafting path is intentionally single-pass with minimal hard checks to reduce looped rewrites.

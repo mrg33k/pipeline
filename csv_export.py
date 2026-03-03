@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 Export daily batch results to CSV for record keeping.
 """
@@ -33,7 +34,6 @@ def export_daily_batch(emails: list[dict], draft_results: list[dict]) -> str:
         dr = draft_lookup.get(profile["email"], {})
         rows.append({
             "date": datetime.now().strftime("%Y-%m-%d"),
-            "scheduled_for_local": item.get("scheduled_for_local", ""),
             "first_name": profile.get("first_name", ""),
             "last_name": profile.get("last_name", ""),
             "email": profile.get("email", ""),
@@ -43,7 +43,6 @@ def export_daily_batch(emails: list[dict], draft_results: list[dict]) -> str:
             "city": profile.get("company_city", ""),
             "state": profile.get("company_state", ""),
             "domain": profile.get("company_domain", ""),
-            "company_linkedin": profile.get("company_linkedin", ""),
             "subject": item.get("subject", ""),
             "draft_id": dr.get("draft_id", ""),
             "draft_created": dr.get("success", False),
