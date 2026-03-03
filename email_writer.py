@@ -5,7 +5,6 @@ Emails follow Patrik's personal style: brief, human, no pitch, just an intro.
 """
 
 import logging
-import random
 from openai import OpenAI
 
 import config
@@ -14,43 +13,61 @@ logger = logging.getLogger(__name__)
 
 client = OpenAI()
 
-# ── Opener patterns for variety tracking ─────────────────────────────────────
-# Each batch rotates through these so consecutive emails never share a pattern.
-OPENER_PATTERNS = [
-    "walked past",
-    "drove by",
-    "noticed",
-    "keep seeing",
-    "was in [area] and saw",
-    "saw your sign",
-    "keep seeing your name around",
-    "been seeing",
-]
-
 SYSTEM_PROMPT = """You write cold outreach emails for Patrik Matheson, who runs a small creative studio in the Phoenix, AZ area. He does web and social video content for local businesses.
 
-Write emails that sound exactly like a real person dashing off a quick note. Not a marketer. Not a salesperson. Just a local guy who noticed this person while going about his day in the Phoenix metro area.
+Write emails that sound exactly like a real person dashing off a quick note. Not a marketer. Not a salesperson. Just a local guy who noticed this person.
 
 EXACT FORMULA — each item gets its own paragraph with a blank line between them:
 1. "Hi [First name]," — ALWAYS include the first name. Never just "Hi," alone. Never "Dear" or "Hello."
-2. One casual sentence about how Patrik noticed THEM (the person or their work). This is about noticing the person or their presence in the area — NOT about their company name. See OPENING LINE rules below.
+2. One simple ice breaker sentence acknowledging that Patrik came across them. See OPENER RULES below.
 3. "Are you already working with someone on web/social stuff?" — use this EXACT phrasing. Always "web/social" — never "web and social" or "social media" or any other variation.
 4. One soft sentence mentioning you had a couple ideas but didn't want to assume anything, so you're introducing yourself first.
 5. Offer to meet locally (say you're in the area) or hop on Zoom. Keep it low-pressure.
 6. Sign off with just: Best,
 
-OPENING LINE RULES (critical):
-- The opening line is about Patrik noticing the PERSON or their work/presence in the area. It is NOT about describing their company.
-- NEVER describe what the company does or summarize their business back to them.
-- NEVER use the company name if it is an abbreviation, acronym, or sounds corporate/unnatural (e.g. "LCRETW", "GTICL", "MREG", "CFJPOGP"). If the company name is short and natural-sounding (like "Francine" or "Los Portales"), you MAY use it — but you don't have to.
-- When in doubt, skip the company name entirely and just reference "you guys" or "your spot" or "your work."
-- NEVER invent or guess a specific street name, address, or intersection. Only reference a specific location if it was explicitly provided in the contact data below. If no specific street/address is provided, stay general: "around Phoenix", "in Scottsdale", "around the area", "in the area", etc.
-- No outsider language: no "I came across," "I saw on your website," "it looks like," "from what I can see," "I checked out"
+OPENER RULES (critical):
+The opener is ONLY an ice breaker. It just acknowledges they exist. Nothing more.
 
-VARIETY (critical):
-- You will be told which opening pattern to use. Follow it.
-- Never start with "I keep seeing" more than once in a batch.
-- Vary the phrasing naturally — walked past, drove by, noticed, was in the area and saw, keep seeing your name around, etc.
+GOOD openers — these work for ANY business type because they're vague and unchallengeable:
+- "I came across you guys recently."
+- "I've been seeing your name around lately."
+- "You guys came up on my radar recently."
+- "I came across your work the other day."
+- "Your name keeps coming up."
+- "I came across [Company] recently." (only if the name is short and natural-sounding)
+- "You guys have been on my radar for a bit."
+- "I came across [First name]'s work recently." (only if it sounds natural)
+
+BAD openers — NEVER use any of these:
+- "I walked past your spot" — too specific, might be wrong
+- "I drove by" — doesn't work for SaaS, nonprofits, remote businesses
+- "I noticed you guys on [street]" — never invent locations
+- "I was in [neighborhood]" — too specific
+- Any reference to a specific street, address, intersection, or neighborhood
+- Any reference to walking, driving, or being physically somewhere
+- "I checked out your website" — sounds researched, not natural
+- "From what I saw on your website" — outsider language
+- "It looks like you" — outsider language
+- Describing what the company does back to them
+
+VARIETY (critical): You MUST vary the opener. Never use the exact same opening sentence twice. Rotate through different phrasings:
+- "I came across you guys recently."
+- "I've been seeing your name around lately."
+- "You guys came up on my radar recently."
+- "I came across your work the other day."
+- "Your name keeps coming up."
+- "You guys have been on my radar for a bit."
+Pick a different one each time. Do not default to the same phrase.
+
+COMPANY NAME RULES:
+- NEVER use the company name if it is an abbreviation, acronym, or sounds corporate/unnatural (e.g. "LCRETW", "GTICL", "MREG", "CFJPOGP"). Use "you guys" instead.
+- Only use the company name if it's short and natural-sounding (like "Francine" or "Los Portales").
+- NEVER describe what the company does or summarize their business.
+
+LOCATION RULES:
+- Do NOT reference any specific location in the opener.
+- In the meeting offer (item 5), you CAN say "I'm in the area" or "I'm around the Phoenix area" — keep it general.
+- NEVER invent or guess a specific street name, address, or neighborhood.
 
 FORMATTING:
 - Put a blank line between every paragraph/thought
@@ -60,19 +77,18 @@ FORMATTING:
 
 RULES:
 - ALWAYS include the recipient's first name after "Hi"
-- NEVER describe what the company does or summarize their business
+- Under 80 words total (not counting the sign-off)
 - No filler phrases like "I hope this email finds you well"
 - No compliments like "amazing" or "incredible"
 - No elaborate descriptions of what Patrik does or what Ahead of Market offers
 - No specific service pitches, no video concept breakdowns
-- Under 80 words total (not counting the sign-off)
 
 EXAMPLES (match this tone, structure, and formatting exactly):
 
 Example 1:
 Hi Bryan,
 
-You guys are doing great work from what I've seen around Scottsdale.
+I came across you guys recently.
 
 Are you already working with someone on web/social stuff?
 
@@ -81,24 +97,24 @@ I had a couple ideas for you guys, but I didn't want to assume anything, so I th
 Best,
 
 Example 2:
-Hi Marcus,
+Hi Sarah,
 
-I keep seeing your trucks around Chandler lately.
+Your name keeps coming up.
 
 Are you already working with someone on web/social stuff?
 
-I had a couple ideas for you guys, but I didn't want to assume anything, so I thought I'd introduce myself first. I'm around the area this week if you want to meet up, or happy to hop on Zoom.
+I had a couple ideas but didn't want to assume anything, so I thought I'd introduce myself first. I'm around the area this week if you want to meet up, or happy to hop on Zoom.
 
 Best,
 
 Example 3:
-Hi Lauren,
+Hi Marcus,
 
-I drove by your spot in Mesa last week.
+You guys came up on my radar recently.
 
 Are you already working with someone on web/social stuff?
 
-I had a couple ideas but didn't want to assume anything, so I thought I'd introduce myself first. I'm in the area most of this week if you'd prefer to meet briefly, otherwise happy to hop on Zoom.
+I had a couple ideas for you guys, but I didn't want to assume anything, so I thought I'd introduce myself first. I'm in the area most of this week if you'd prefer to meet briefly, otherwise happy to hop on Zoom.
 
 Best,"""
 
@@ -106,10 +122,10 @@ Best,"""
 def write_email(profile: dict, opener_hint: str = "") -> dict:
     """
     Write a short, casual email for one prospect.
-    opener_hint: suggested opener pattern for variety (e.g. "walked past", "drove by")
+    opener_hint is kept for API compatibility but no longer used for location-based openers.
     Returns dict with 'subject' and 'body'.
     """
-    context = _build_context(profile, opener_hint)
+    context = _build_context(profile)
 
     response = client.chat.completions.create(
         model=config.OPENAI_MODEL,
@@ -140,16 +156,11 @@ def write_email(profile: dict, opener_hint: str = "") -> dict:
 
 
 def write_emails_batch(profiles: list[dict]) -> list[dict]:
-    """Write emails for all profiles with rotating opener patterns for variety."""
+    """Write emails for all profiles."""
     results = []
-    # Shuffle opener patterns and cycle through them
-    openers = list(OPENER_PATTERNS)
-    random.shuffle(openers)
-
     for i, profile in enumerate(profiles):
-        opener_hint = openers[i % len(openers)]
-        logger.info(f"Writing email {i + 1}/{len(profiles)}: {profile.get('first_name', '?')} at {profile.get('company_name', '?')} (opener: {opener_hint})")
-        email = write_email(profile, opener_hint=opener_hint)
+        logger.info(f"Writing email {i + 1}/{len(profiles)}: {profile.get('first_name', '?')} at {profile.get('company_name', '?')}")
+        email = write_email(profile)
         results.append({
             "profile": profile,
             "subject": email["subject"],
@@ -170,55 +181,34 @@ def _is_abbreviation(name: str) -> bool:
     return False
 
 
-def _build_context(profile: dict, opener_hint: str = "") -> str:
-    """Build a minimal user prompt with variety hint and real location data."""
+def _build_context(profile: dict) -> str:
+    """Build a minimal user prompt with only the data the LLM needs."""
     first_name = profile.get("first_name", "there")
     company = profile.get("company_name", "")
-    city = profile.get("company_city", "")
-    state = profile.get("company_state", "AZ")
     industry = profile.get("company_industry", "")
-    address = profile.get("company_address", "")
-
-    # Build location string from real data only
-    location_parts = []
-    if address:
-        location_parts.append(f"Address: {address}")
-    if city:
-        location_parts.append(f"City: {city}")
-    if state:
-        location_parts.append(f"State: {state}")
-    location_str = ", ".join(location_parts) if location_parts else "Phoenix, AZ area"
 
     # Company name note
-    company_note = ""
     if company and (_is_abbreviation(company) or len(company) > 30):
         company_note = (
-            f"\nNOTE: The company name '{company}' is an abbreviation or very long. "
-            f"Do NOT use it in the email. Just say 'you guys' or 'your spot' instead."
+            f"The company name '{company}' is an abbreviation or very long. "
+            f"Do NOT use it in the email. Use 'you guys' instead."
         )
     elif company:
         company_note = (
-            f"\nThe company name is '{company}'. You may use it if it sounds natural, "
-            f"but you don't have to. When in doubt, skip it."
+            f"The company name is '{company}'. You may use it in the opener if it sounds natural and short, "
+            f"but you don't have to. When in doubt, skip it and use 'you guys'."
         )
-
-    # Opener variety instruction
-    opener_instruction = ""
-    if opener_hint:
-        opener_instruction = (
-            f"\nOPENER PATTERN TO USE: '{opener_hint}' — work this naturally into the opening line. "
-            f"Do not use it word-for-word if it sounds forced; adapt it to fit."
-        )
+    else:
+        company_note = "No company name available. Use 'you guys'."
 
     return (
         f"Write a cold outreach email to {first_name}.\n"
         f"Company: {company}\n"
-        f"Location: {location_str}\n"
         f"Industry: {industry}\n"
-        f"{company_note}\n"
-        f"{opener_instruction}\n\n"
-        f"IMPORTANT: The first name is {first_name}. Start with 'Hi {first_name},'\n"
-        f"IMPORTANT: Do NOT invent any street names or specific addresses. Only use location info provided above.\n"
+        f"{company_note}\n\n"
+        f"IMPORTANT: Start with 'Hi {first_name},'\n"
+        f"IMPORTANT: The opener must be a simple, vague ice breaker. "
+        f"No walking, no driving, no streets, no neighborhoods, no physical locations.\n"
         f"IMPORTANT: Do NOT describe what the company does.\n"
         f"Follow the formula exactly."
     )
