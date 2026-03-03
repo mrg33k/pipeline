@@ -26,12 +26,20 @@ logger = logging.getLogger(__name__)
 # Cache the service to avoid re-authenticating on every call
 _service_cache = None
 
-# Subject line patterns that identify outreach drafts from this pipeline
-OUTREACH_SUBJECT_PATTERNS = [
-    r"quick question for ",
-    r"video for ",
-    r"a quick question for ",
-    r"question for ",
+# Body content phrases that identify an outreach email (fallback detection)
+OUTREACH_BODY_PHRASES = [
+    "introduce myself",
+    "web/social",
+    "working with someone",
+    "meet briefly",
+    "hop on zoom",
+    "jump on zoom",
+    "came up on my radar",
+    "came across you",
+    "came across your",
+    "keeping coming up",
+    "keeps coming up",
+    "been on my radar",
 ]
 
 
@@ -83,7 +91,7 @@ def _get_gmail_service():
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Draft reading & parsing
+# HTML / body parsing
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class _HTMLTextExtractor(HTMLParser):
@@ -119,7 +127,6 @@ def _html_to_text(html: str) -> str:
     parser = _HTMLTextExtractor()
     parser.feed(html)
     text = parser.get_text()
-    # Collapse excessive blank lines
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
 
@@ -159,17 +166,23 @@ def _extract_body_from_payload(payload: dict) -> tuple[str, str]:
     return plain, html
 
 
-def _strip_signature(text: str) -> str:
+def _split_body_and_signature(text: str) -> tuple[str, str]:
     """
-    Remove Patrik's signature block from plain text.
-    The signature starts after 'Best,' or 'Cheers,'.
+    Split email text into (email_body, signature_block).
+
+    The signature starts after the sign-off line ("Best," or "Cheers,").
+    Everything after the sign-off is considered the signature.
+
+    Returns (body_including_signoff, signature_after_signoff).
+    If no sign-off is found, returns (full_text, "").
     """
-    # Find the sign-off line and keep everything up to and including it
     for marker in ["Best,", "Cheers,"]:
         idx = text.find(marker)
         if idx != -1:
-            return text[: idx + len(marker)].strip()
-    return text.strip()
+            body = text[: idx + len(marker)].strip()
+            sig = text[idx + len(marker):].strip()
+            return body, sig
+    return text.strip(), ""
 
 
 def _extract_first_name_from_body(body_text: str) -> str:
@@ -183,38 +196,33 @@ def _extract_first_name_from_body(body_text: str) -> str:
     return ""
 
 
-def _is_outreach_draft(subject: str) -> bool:
-    """Return True if the subject looks like an outreach email from this pipeline."""
-    subject_lower = subject.lower()
-    for pattern in OUTREACH_SUBJECT_PATTERNS:
-        if re.search(pattern, subject_lower):
-            return True
-    return False
-
-
-def _extract_company_from_subject(subject: str) -> str:
+def _is_outreach_by_body(body_text: str) -> bool:
     """
-    Try to extract company name from subject like 'quick question for Acme Corp'.
-    Returns empty string if not parseable.
+    Fallback: check if a draft body looks like an outreach email
+    by scanning for characteristic phrases.
     """
-    for pattern in OUTREACH_SUBJECT_PATTERNS:
-        m = re.search(pattern, subject, re.IGNORECASE)
-        if m:
-            return subject[m.end():].strip()
-    return ""
+    body_lower = body_text.lower()
+    matches = sum(1 for phrase in OUTREACH_BODY_PHRASES if phrase in body_lower)
+    return matches >= 1  # at least one phrase is enough
 
 
-def get_outreach_drafts(max_results: int = 200) -> list[dict]:
+def get_outreach_drafts(max_results: int = 200, known_emails: set = None) -> list[dict]:
     """
-    Fetch all Gmail drafts and return only the ones that look like
-    outreach emails from this pipeline.
+    Fetch all Gmail drafts and return only the ones that are outreach emails.
+
+    Detection strategy (in priority order):
+    1. PRIMARY: If known_emails is provided, match draft recipient against that set.
+       Any draft sent to a known Apollo contact is an outreach draft.
+    2. FALLBACK: If known_emails is empty/None, check body content for outreach phrases.
 
     Returns a list of dicts with:
-        draft_id, subject, to_email, to_name, company, body_text
+        draft_id, subject, to_email, to_name, first_name, company, body_text, raw_signature
     """
+    if known_emails is None:
+        known_emails = set()
+
     service = _get_gmail_service()
 
-    # List all drafts
     try:
         result = service.users().drafts().list(userId="me", maxResults=max_results).execute()
         draft_stubs = result.get("drafts", [])
@@ -222,7 +230,11 @@ def get_outreach_drafts(max_results: int = 200) -> list[dict]:
         logger.error(f"Failed to list drafts: {e}")
         return []
 
-    logger.info(f"Found {len(draft_stubs)} total drafts in Gmail, filtering for outreach...")
+    use_email_matching = len(known_emails) > 0
+    logger.info(
+        f"Found {len(draft_stubs)} total drafts in Gmail. "
+        f"Detection mode: {'email-match against {len(known_emails)} known contacts' if use_email_matching else 'body-content fallback'}"
+    )
 
     outreach_drafts = []
     for stub in draft_stubs:
@@ -241,11 +253,6 @@ def get_outreach_drafts(max_results: int = 200) -> list[dict]:
         subject = headers.get("subject", "")
         to_raw = headers.get("to", "")
 
-        # Filter: only process outreach drafts
-        if not _is_outreach_draft(subject):
-            logger.debug(f"Skipping non-outreach draft: '{subject}'")
-            continue
-
         # Parse To: header — "First Last <email@domain.com>" or just "email@domain.com"
         to_name = ""
         to_email = to_raw.strip()
@@ -254,13 +261,9 @@ def get_outreach_drafts(max_results: int = 200) -> list[dict]:
             to_name = m.group(1).strip().strip('"')
             to_email = m.group(2).strip()
 
-        # Extract first name — try To: header first, then parse from email body
-        first_name = to_name.split()[0] if to_name else ""
+        to_email_lower = to_email.lower()
 
-        # Extract company from subject line
-        company = _extract_company_from_subject(subject)
-
-        # Extract body text early so we can parse first name from it if needed
+        # Extract body text
         payload = msg.get("payload", {})
         plain_text, html_text = _extract_body_from_payload(payload)
 
@@ -271,12 +274,30 @@ def get_outreach_drafts(max_results: int = 200) -> list[dict]:
         else:
             body_text = ""
 
-        # If we couldn't get first name from To: header, parse it from "Hi [Name]," in the body
+        # ── Determine if this is an outreach draft ──────────────────────
+        if use_email_matching:
+            # PRIMARY: check if recipient is a known Apollo contact
+            is_outreach = to_email_lower in known_emails
+            if not is_outreach:
+                logger.debug(f"Skipping draft (not an Apollo contact): {to_email} | '{subject}'")
+                continue
+        else:
+            # FALLBACK: check body content for outreach phrases
+            is_outreach = _is_outreach_by_body(body_text)
+            if not is_outreach:
+                logger.debug(f"Skipping draft (no outreach phrases in body): '{subject}'")
+                continue
+
+        # Extract first name — try To: header first, then parse from email body
+        first_name = to_name.split()[0] if to_name else ""
         if not first_name and body_text:
             first_name = _extract_first_name_from_body(body_text)
 
-        # Strip the signature to get just the email body
-        body_clean = _strip_signature(body_text)
+        # Split body into email text + signature block
+        body_clean, raw_signature = _split_body_and_signature(body_text)
+
+        # Extract company from subject line (best-effort, may be empty)
+        company = _extract_company_from_subject(subject)
 
         outreach_drafts.append({
             "draft_id": draft_id,
@@ -285,41 +306,72 @@ def get_outreach_drafts(max_results: int = 200) -> list[dict]:
             "to_name": to_name,
             "first_name": first_name,
             "company": company,
-            "body_text": body_clean,
+            "body_text": body_clean,       # email text only (no signature)
+            "raw_signature": raw_signature, # original signature block (preserved as-is)
         })
 
     logger.info(f"Found {len(outreach_drafts)} outreach drafts to rewrite")
     return outreach_drafts
 
 
+def _extract_company_from_subject(subject: str) -> str:
+    """
+    Try to extract company name from subject like 'quick question for Acme Corp'.
+    Returns empty string if not parseable.
+    """
+    m = re.search(r"(?:quick question for|video for|question for|idea for)\s+(.+)", subject, re.IGNORECASE)
+    if m:
+        return m.group(1).strip()
+    return ""
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Draft creation & management
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def _build_message(to_email: str, subject: str, body_text: str) -> str:
-    """Build a MIME message and return base64url-encoded raw string."""
-    body_html = body_text.replace("\n", "<br>\n")
+def _build_message(to_email: str, subject: str, body_text: str, signature_override: str = "") -> str:
+    """
+    Build a MIME message and return base64url-encoded raw string.
 
-    full_html = (
-        '<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;'
-        'color:#222222;line-height:1.5;">\n'
-        + body_html
-        + "\n"
-        + config.EMAIL_SIGNATURE_HTML
-        + "\n</div>"
-    )
+    If signature_override is provided (non-empty), it is appended as plain text
+    after the email body instead of the default HTML signature. This preserves
+    the original signature from a rewritten draft.
+
+    For new drafts (no override), the full HTML signature from config is used.
+    """
+    if signature_override:
+        # Rewrite mode: preserve the original signature as-is (plain text)
+        full_plain = body_text + "\n\n" + signature_override
+        full_html = (
+            '<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;'
+            'color:#222222;line-height:1.5;">\n'
+            + body_text.replace("\n", "<br>\n")
+            + "<br><br>\n"
+            + signature_override.replace("\n", "<br>\n")
+            + "\n</div>"
+        )
+    else:
+        # New draft: use the full HTML signature from config
+        full_plain = (
+            body_text
+            + "\n\nCheers,\nPatrik Matheson\nDigital Strategy\n"
+            "Video Marketing | Ahead of Market\n602.373.2164\naheadofmarket.com"
+        )
+        full_html = (
+            '<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;'
+            'color:#222222;line-height:1.5;">\n'
+            + body_text.replace("\n", "<br>\n")
+            + "\n"
+            + config.EMAIL_SIGNATURE_HTML
+            + "\n</div>"
+        )
 
     message = MIMEMultipart("alternative")
     message["to"] = to_email
     message["from"] = f"{config.SENDER_NAME} <{config.SENDER_EMAIL}>"
     message["subject"] = subject
 
-    plain_part = MIMEText(
-        body_text
-        + "\n\nCheers,\nPatrik Matheson\nDigital Strategy\n"
-        "Video Marketing | Ahead of Market\n602.373.2164\naheadofmarket.com",
-        "plain",
-    )
+    plain_part = MIMEText(full_plain, "plain")
     html_part = MIMEText(full_html, "html")
     message.attach(plain_part)
     message.attach(html_part)
@@ -354,13 +406,15 @@ def delete_draft(draft_id: str) -> bool:
         return False
 
 
-def update_draft(draft_id: str, to_email: str, subject: str, body_text: str) -> dict | None:
+def update_draft(draft_id: str, to_email: str, subject: str, body_text: str,
+                 signature_override: str = "") -> dict | None:
     """
     Update an existing Gmail draft with new content.
+    If signature_override is provided, it is preserved in the updated draft.
     Falls back to delete+create if the update API call fails.
     """
     service = _get_gmail_service()
-    raw = _build_message(to_email, subject, body_text)
+    raw = _build_message(to_email, subject, body_text, signature_override=signature_override)
     try:
         draft = service.users().drafts().update(
             userId="me",

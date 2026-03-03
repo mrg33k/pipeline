@@ -20,7 +20,6 @@ Options:
 import argparse
 import logging
 import os
-import random
 import sys
 import time
 from datetime import datetime
@@ -234,7 +233,10 @@ def mode_rewrite(db, max_emails, dry_run, log_file):
     """
     Rewrite existing Gmail drafts with the latest email prompt/tone.
     Pulls drafts DIRECTLY from Gmail — no dependency on contacts_history.json.
-    Identifies outreach drafts by subject line pattern.
+
+    Detection strategy:
+    - PRIMARY: match draft recipient email against known Apollo contacts in DB
+    - FALLBACK: if DB is empty, detect outreach drafts by body content phrases
     """
     logger = logging.getLogger("pipeline.rewrite")
 
@@ -247,12 +249,26 @@ def mode_rewrite(db, max_emails, dry_run, log_file):
     else:
         limit = 9999  # effectively unlimited
 
+    # Build set of known Apollo contact emails for primary detection
+    known_emails = db.get_all_emails()  # returns set of lowercase email strings
+    if known_emails:
+        logger.info(f"Using email-match detection against {len(known_emails)} known contacts")
+    else:
+        logger.info("contacts_history.json is empty — using body-content fallback detection")
+
     divider("Connecting to Gmail and fetching outreach drafts...")
-    outreach_drafts = gmail_drafter.get_outreach_drafts(max_results=200)
+    outreach_drafts = gmail_drafter.get_outreach_drafts(
+        max_results=200,
+        known_emails=known_emails,
+    )
 
     if not outreach_drafts:
         print("No outreach drafts found in Gmail.")
-        print("Outreach drafts are identified by subject lines like 'quick question for ...' or 'video for ...'")
+        if known_emails:
+            print(f"  Checked {len(known_emails)} known Apollo contacts — none matched draft recipients.")
+        else:
+            print("  DB is empty. Tried body-content detection but found no matching phrases.")
+            print("  Run --import contacts.csv first to populate the contact database.")
         return
 
     to_rewrite = outreach_drafts[:limit]
@@ -269,44 +285,55 @@ def mode_rewrite(db, max_emails, dry_run, log_file):
     for i, draft_info in enumerate(to_rewrite):
         draft_id = draft_info["draft_id"]
         to_email = draft_info["to_email"]
-        company = draft_info["company"]
         first_name = draft_info["first_name"]
         old_body = draft_info["body_text"]
-        subject = draft_info["subject"]
+        raw_signature = draft_info.get("raw_signature", "")  # preserve original signature
+        old_subject = draft_info["subject"]
+
+        # Look up company from DB if available (more reliable than subject parsing)
+        db_contact = db.get_contact_by_email(to_email)
+        if db_contact:
+            company = db_contact.get("company", draft_info.get("company", ""))
+            industry = db_contact.get("industry", "")
+            city = db_contact.get("city", "")
+            state = db_contact.get("state", "")
+            if not first_name:
+                first_name = db_contact.get("first_name", "")
+        else:
+            company = draft_info.get("company", "")
+            industry = ""
+            city = ""
+            state = ""
 
         # Build a minimal profile for the email writer
-        # We extract what we can from the draft itself
         profile = {
-            "apollo_id": to_email,  # use email as ID since we may not have Apollo ID
+            "apollo_id": to_email,
             "first_name": first_name,
             "last_name": "",
             "email": to_email,
             "title": "",
             "company_name": company,
-            "company_industry": "",
-            "company_city": "Phoenix",  # default to Phoenix area
-            "company_state": "AZ",
+            "company_industry": industry,
+            "company_city": city or "Phoenix",
+            "company_state": state or "AZ",
             "company_domain": "",
         }
 
         logger.info(f"Processing {i + 1}/{len(to_rewrite)}: {first_name} at {company} <{to_email}>")
 
-        # Rotate opener patterns for variety
-        if i == 0:
-            _openers = list(email_writer.OPENER_PATTERNS)
-            random.shuffle(_openers)
-        opener_hint = _openers[i % len(_openers)]
-
-        # Write new email with opener variety hint
-        new_email = email_writer.write_email(profile, opener_hint=opener_hint)
+        # Write new email — opener variety is handled by the LLM prompt
+        new_email = email_writer.write_email(profile)
         new_body = new_email["body"]
-        new_subject = new_email["subject"]
+
+        # Subject line: always 'quick question' (simple, consistent)
+        new_subject = "quick question"
 
         # ── Print before/after comparison ──────────────────────────────
         print(f"\n--- DRAFT {i + 1} of {len(to_rewrite)} ---")
         print(f"To:      {to_email}")
         print(f"Company: {company}")
-        print(f"Subject: {subject}")
+        print(f"Old subject: {old_subject}")
+        print(f"New subject: {new_subject}")
         print()
         print("BEFORE:")
         for line in old_body.split("\n"):
@@ -315,14 +342,20 @@ def mode_rewrite(db, max_emails, dry_run, log_file):
         print("AFTER:")
         for line in new_body.split("\n"):
             print(f"  {line}")
+        if raw_signature:
+            print()
+            print(f"  [Signature preserved: {len(raw_signature)} chars]")
 
         if dry_run:
             print()
             print("  [DRY RUN — no changes made to Gmail]")
             continue
 
-        # ── Replace the draft in Gmail ──────────────────────────────────
-        updated = gmail_drafter.update_draft(draft_id, to_email, new_subject, new_body)
+        # ── Replace the draft in Gmail (preserving original signature) ───────
+        updated = gmail_drafter.update_draft(
+            draft_id, to_email, new_subject, new_body,
+            signature_override=raw_signature,
+        )
         if updated:
             rewritten_count += 1
             new_id = updated.get("id", draft_id)

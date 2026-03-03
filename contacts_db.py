@@ -29,8 +29,13 @@ class ContactsDB:
 
     def _load(self) -> dict:
         if os.path.exists(self.db_path):
-            with open(self.db_path, "r") as f:
-                return json.load(f)
+            try:
+                with open(self.db_path, "r") as f:
+                    content = f.read().strip()
+                    if content:
+                        return json.loads(content)
+            except (json.JSONDecodeError, ValueError) as e:
+                logger.warning(f"Could not parse {self.db_path}: {e}. Starting fresh.")
         return {"contacts": {}, "runs": []}
 
     def save(self):
@@ -48,6 +53,23 @@ class ContactsDB:
 
     def get_all_ids(self) -> set:
         return set(self.data["contacts"].keys())
+
+    def get_all_emails(self) -> set:
+        """Return a set of all known contact email addresses (lowercase) for draft matching."""
+        emails = set()
+        for info in self.data["contacts"].values():
+            email = info.get("email", "")
+            if email:
+                emails.add(email.lower())
+        return emails
+
+    def get_contact_by_email(self, email: str) -> dict:
+        """Look up a contact by email address (case-insensitive). Returns dict or None."""
+        email_lower = email.lower()
+        for cid, info in self.data["contacts"].items():
+            if info.get("email", "").lower() == email_lower:
+                return {"id": cid, **info}
+        return None
 
     def contacted_count(self) -> int:
         return len(self.data["contacts"])
