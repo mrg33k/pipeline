@@ -1,0 +1,29 @@
+# Secrets
+.env
+*.env.local
+client_secret.json
+gmail_tokens.json
+core_v1/.env
+core_v1/client_secret.json
+core_v1/gmail_tokens.json
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+venv/
+core_v1/.venv/
+
+# Runtime/generated data
+logs/
+daily_exports/
+core_v1/logs/
+core_v1/daily_exports/
+contacts_history.json
+
+# Local backups / large archives
+archive/
+Archive.zip
+Archive 2.zip
+
+# OS
+.DS_Store

@@ -1,0 +1,8 @@
+.env
+client_secret.json
+gmail_tokens.json
+__pycache__/
+*.pyc
+logs/
+daily_exports/
+*.log
