@@ -172,6 +172,17 @@ def _strip_signature(text: str) -> str:
     return text.strip()
 
 
+def _extract_first_name_from_body(body_text: str) -> str:
+    """
+    Parse the recipient's first name from the email greeting.
+    Looks for patterns like 'Hi Robert,' or 'Hey Sarah,' or 'Hello Mike,'
+    """
+    m = re.match(r"^\s*(?:Hi|Hey|Hello)\s+([A-Z][a-z]+)", body_text)
+    if m:
+        return m.group(1)
+    return ""
+
+
 def _is_outreach_draft(subject: str) -> bool:
     """Return True if the subject looks like an outreach email from this pipeline."""
     subject_lower = subject.lower()
@@ -243,13 +254,13 @@ def get_outreach_drafts(max_results: int = 200) -> list[dict]:
             to_name = m.group(1).strip().strip('"')
             to_email = m.group(2).strip()
 
-        # Extract first name from To name
+        # Extract first name — try To: header first, then parse from email body
         first_name = to_name.split()[0] if to_name else ""
 
         # Extract company from subject line
         company = _extract_company_from_subject(subject)
 
-        # Extract body text
+        # Extract body text early so we can parse first name from it if needed
         payload = msg.get("payload", {})
         plain_text, html_text = _extract_body_from_payload(payload)
 
@@ -259,6 +270,10 @@ def get_outreach_drafts(max_results: int = 200) -> list[dict]:
             body_text = _html_to_text(html_text)
         else:
             body_text = ""
+
+        # If we couldn't get first name from To: header, parse it from "Hi [Name]," in the body
+        if not first_name and body_text:
+            first_name = _extract_first_name_from_body(body_text)
 
         # Strip the signature to get just the email body
         body_clean = _strip_signature(body_text)

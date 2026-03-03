@@ -20,6 +20,7 @@ Options:
 import argparse
 import logging
 import os
+import random
 import sys
 import time
 from datetime import datetime
@@ -237,8 +238,14 @@ def mode_rewrite(db, max_emails, dry_run, log_file):
     """
     logger = logging.getLogger("pipeline.rewrite")
 
-    # In dry-run mode, default to 3 drafts for a quick comparison preview
-    limit = max_emails if not dry_run else min(max_emails, 3)
+    # Default: process ALL outreach drafts (no hard cap)
+    # --max flag overrides; dry-run defaults to 3 for quick preview
+    if dry_run and max_emails == 0:
+        limit = 3  # sensible default for dry-run preview
+    elif max_emails > 0:
+        limit = max_emails
+    else:
+        limit = 9999  # effectively unlimited
 
     divider("Connecting to Gmail and fetching outreach drafts...")
     outreach_drafts = gmail_drafter.get_outreach_drafts(max_results=200)
@@ -282,10 +289,16 @@ def mode_rewrite(db, max_emails, dry_run, log_file):
             "company_domain": "",
         }
 
-        logger.info(f"Processing {i + 1}/{len(to_rewrite)}: {to_email} ({company})")
+        logger.info(f"Processing {i + 1}/{len(to_rewrite)}: {first_name} at {company} <{to_email}>")
 
-        # Write new email
-        new_email = email_writer.write_email(profile)
+        # Rotate opener patterns for variety
+        if i == 0:
+            _openers = list(email_writer.OPENER_PATTERNS)
+            random.shuffle(_openers)
+        opener_hint = _openers[i % len(_openers)]
+
+        # Write new email with opener variety hint
+        new_email = email_writer.write_email(profile, opener_hint=opener_hint)
         new_body = new_email["body"]
         new_subject = new_email["subject"]
 
@@ -505,8 +518,8 @@ Examples:
                         help="Pipeline mode (default: full)")
     parser.add_argument("--import", dest="import_csv", metavar="FILE",
                         help="Import contacts from a CSV file")
-    parser.add_argument("--max", type=int, default=config.MAX_DAILY_EMAILS,
-                        help=f"Max emails to process (default: {config.MAX_DAILY_EMAILS})")
+    parser.add_argument("--max", type=int, default=0,
+                        help="Max emails to process (default: 25 for full/draft, unlimited for rewrite)")
     parser.add_argument("--dry-run", action="store_true",
                         help="Preview emails without creating Gmail drafts")
     args = parser.parse_args()
@@ -534,13 +547,19 @@ Examples:
         print("\nConfiguration errors found. Fix them and try again.")
         sys.exit(1)
 
-    # ── Run the selected mode ────────────────────────────────────────────
+    # ── Resolve max emails per mode ────────────────────────────────────
+    max_emails = args.max
+    if max_emails == 0 and mode in ("full", "draft"):
+        max_emails = config.MAX_DAILY_EMAILS  # default 25 for these modes
+    # For rewrite mode, 0 means unlimited (handled inside mode_rewrite)
+
+    # ── Run the selected mode ────────────────────────────────────────
     if mode == "full":
-        mode_full(db, args.max, args.dry_run, log_file)
+        mode_full(db, max_emails, args.dry_run, log_file)
     elif mode == "rewrite":
-        mode_rewrite(db, args.max, args.dry_run, log_file)
+        mode_rewrite(db, max_emails, args.dry_run, log_file)
     elif mode == "draft":
-        mode_draft(db, args.max, args.dry_run, log_file)
+        mode_draft(db, max_emails, args.dry_run, log_file)
 
     logger.info(f"Pipeline finished ({mode} mode).")
 
