@@ -5,6 +5,7 @@ Emails follow Patrik's personal style: brief, human, no pitch, just an intro.
 """
 
 import logging
+import re
 from openai import OpenAI
 
 import config
@@ -30,8 +31,9 @@ THE OPENER (first line after greeting):
 - If a "Verified fact" is provided in the context, write ONE short casual sentence that shows you're aware of what they do. Use the fact naturally. Examples:
   - Fact: "Mexican restaurant" → "I've eaten at Los Portales a few times."
   - Fact: "pool service software for contractors" → "I know you guys work in the pool service space."
-  - Fact: "commercial roofing company" → "I know you guys do roofing work around here."
+  - Fact: "commercial roofing company" → "I know you guys do a lot of roofing work around here."
   - Fact: "yoga studio" → "I've seen your studio around town."
+- For trade-style facts (construction, roofing, concrete, plumbing, HVAC, electrical, contractor), prefer wording with "a lot of" when natural.
 - If NO fact is provided, use a simple generic opener like "I came across you guys recently." or "Your name came up recently."
 - NEVER invent details that are not in the verified fact.
 - NEVER mention their website, Google, LinkedIn, or how you found them.
@@ -119,6 +121,7 @@ def write_email(profile: dict, opener_hint: str = "") -> dict:
     )
 
     body = response.choices[0].message.content.strip()
+    body = _normalize_trade_opener(body, profile)
 
     # Use company name for subject only if it's short and natural
     company = profile.get("company_name", "")
@@ -201,3 +204,51 @@ def _build_context(profile: dict) -> str:
         f"IMPORTANT: NEVER invent details beyond the verified fact.\n"
         f"Follow the formula exactly."
     )
+
+
+def _is_trade_fact(company_fact: str) -> bool:
+    fact = (company_fact or "").lower()
+    if not fact:
+        return False
+    trade_tokens = (
+        "construction",
+        "concrete",
+        "roof",
+        "plumb",
+        "hvac",
+        "electrical",
+        "contractor",
+    )
+    return any(token in fact for token in trade_tokens)
+
+
+def _normalize_trade_opener(body: str, profile: dict) -> str:
+    """
+    For trade contexts, normalize opener phrase:
+    "I know you guys do X work around here." -> "I know you guys do a lot of X work around here."
+    """
+    company_fact = (profile.get("company_fact") or "").strip()
+    if not _is_trade_fact(company_fact):
+        return body
+
+    lines = body.split("\n")
+    opener_idx = None
+    for idx, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.lower().startswith("hi "):
+            continue
+        if stripped:
+            opener_idx = idx
+            break
+    if opener_idx is None:
+        return body
+
+    opener = lines[opener_idx].strip()
+    pattern = re.compile(r"^(I know you guys do)\s+(?!a lot of\b)(.+)$", re.IGNORECASE)
+    match = pattern.match(opener)
+    if not match:
+        return body
+
+    new_opener = f"{match.group(1)} a lot of {match.group(2)}"
+    lines[opener_idx] = new_opener
+    return "\n".join(lines)

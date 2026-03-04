@@ -9,6 +9,15 @@ from dotenv import load_dotenv
 # Load .env file if it exists
 load_dotenv()
 
+
+def _int_env(name: str, default: int) -> int:
+    value = os.environ.get(name, str(default)).strip()
+    try:
+        return int(value)
+    except ValueError:
+        return default
+
+
 # ── API Keys ──────────────────────────────────────────────────────────────────
 APOLLO_API_KEY = os.environ.get("APOLLO_API_KEY", "")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
@@ -17,6 +26,7 @@ OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 GMAIL_SCOPES = [
     "https://www.googleapis.com/auth/gmail.compose",
     "https://www.googleapis.com/auth/gmail.settings.basic",
+    "https://www.googleapis.com/auth/gmail.readonly",
 ]
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
@@ -78,6 +88,7 @@ INDUSTRY_KEYWORDS = [
 MAX_DAILY_EMAILS = 25
 APOLLO_SEARCH_PAGES = 3          # pages to pull from free search (300 results)
 APOLLO_SEARCH_PER_PAGE = 100     # max per page
+RECENT_CONTACT_HOURS = _int_env("RECENT_CONTACT_HOURS", 48)
 
 # ── OpenAI ────────────────────────────────────────────────────────────────────
 OPENAI_MODEL = "gpt-4.1-mini"

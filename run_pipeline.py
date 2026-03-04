@@ -36,6 +36,7 @@ import research
 import email_writer
 import gmail_drafter
 import csv_export
+from preflight_ui import PreflightSettings, collect_preflight_settings
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -126,27 +127,137 @@ def prompt_daily_focus(mode: str) -> str:
     return focus
 
 
+def prompt_daily_location(mode: str) -> str:
+    """
+    Ask for optional location targeting in full mode.
+    Input is normalized to Apollo organization_locations format by apollo_client.
+    """
+    if mode != "full":
+        return ""
+    if not sys.stdin.isatty():
+        return ""
+
+    print("Optional location filter")
+    print("  Where should Apollo search?")
+    print("  Examples: AZ | Arizona | Phoenix, AZ | Dallas, Texas")
+    print("  Use ';' to target multiple locations.")
+    location = input("  Location (press Enter for default Phoenix metro): ").strip()
+    print()
+    return location
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # MODE 1: FULL RUN
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def mode_full(db, max_emails, dry_run, log_file, daily_focus: str = ""):
+def mode_full(
+    db,
+    max_emails,
+    dry_run,
+    log_file,
+    daily_focus: str = "",
+    daily_location: str = "",
+    recent_window_hours: int | None = None,
+):
     """Full pipeline: Apollo search -> LLM filter -> enrich -> research -> write -> draft."""
     logger = logging.getLogger("pipeline.full")
+    recent_window_hours = max(1, int(recent_window_hours or config.RECENT_CONTACT_HOURS))
     already_contacted = db.get_all_ids()
+    recent_contact_ids = db.get_recent_contact_ids(hours=recent_window_hours)
+    recent_contact_emails = db.get_recent_contact_emails(hours=recent_window_hours)
+
+    try:
+        gmail_drafter.ensure_sent_check_available()
+        logger.info("Sent-check readiness: OK")
+    except RuntimeError as e:
+        logger.error(str(e))
+        print("\nDuplicate protection check failed.")
+        print("Run ./venv/bin/python reauth_gmail.py and try again.")
+        return
+
+    sent_duplicate_cache = {}
+    duplicate_stats = {"detected": 0, "deleted": 0, "skipped": 0}
+
     logger.info(f"Previously tracked: {db.contacted_count()} contacts")
+    logger.info(
+        f"Recent contact block window: {recent_window_hours}h "
+        f"({len(recent_contact_ids)} IDs, {len(recent_contact_emails)} DB emails)"
+    )
     if daily_focus:
         logger.info(f"Daily outreach focus: {daily_focus}")
+    if daily_location:
+        logger.info(f"Daily location input: {daily_location}")
+
+    # Pre-batch cleanup: delete existing outreach drafts that were already sent recently.
+    try:
+        cleanup = gmail_drafter.cleanup_duplicate_outreach_drafts(
+            hours=recent_window_hours,
+            dry_run=dry_run,
+            max_results=500,
+        )
+    except RuntimeError as e:
+        logger.error(str(e))
+        print("\nDuplicate protection check failed.")
+        print("Run ./venv/bin/python reauth_gmail.py and try again.")
+        return
+    duplicate_stats["detected"] += cleanup["duplicates_detected"]
+    duplicate_stats["deleted"] += cleanup["deleted"]
+    duplicate_stats["skipped"] += cleanup["duplicates_detected"]
+    logger.info(
+        "Duplicate draft cleanup (full mode): "
+        f"detected={cleanup['duplicates_detected']} "
+        f"deleted={cleanup['deleted']} would_delete={cleanup['would_delete']} failed={cleanup['failed']}"
+    )
 
     # ── Step 1: Apollo Free Search ───────────────────────────────────────
     divider("STEP 1: Apollo People Search (free, no credits)")
     candidates = apollo_client.search_all_pages(
         max_pages=config.APOLLO_SEARCH_PAGES,
         daily_focus=daily_focus,
+        include_default_keywords=not bool(daily_focus),
+        location_input=daily_location,
     )
+
+    if daily_focus and not candidates:
+        logger.warning("No candidates found for the current daily focus.")
+        if sys.stdin.isatty():
+            choice = input("No focus matches found. Expand to default industries? [y/N]: ").strip().lower()
+            print()
+            if choice in {"y", "yes"}:
+                logger.info("Expanding search to default industry keywords by user request.")
+                candidates = apollo_client.search_all_pages(
+                    max_pages=config.APOLLO_SEARCH_PAGES,
+                    daily_focus=daily_focus,
+                    include_default_keywords=True,
+                    location_input=daily_location,
+                )
+            else:
+                logger.info("Stopping before enrichment to avoid off-focus outreach.")
+                return
+        else:
+            logger.error("No focus matches found in non-interactive mode. Exiting without broadening.")
+            return
 
     if not candidates:
         logger.error("No candidates found from Apollo search. Exiting.")
+        return
+
+    # Exclude candidates recently contacted by ID/email before ranking.
+    candidates_before_recent_filter = len(candidates)
+    candidates = [
+        p for p in candidates
+        if p.get("id") not in recent_contact_ids
+        and _extract_candidate_email(p) not in recent_contact_emails
+    ]
+    skipped_recent_candidates = candidates_before_recent_filter - len(candidates)
+    if skipped_recent_candidates:
+        logger.info(
+            f"Excluded {skipped_recent_candidates} candidates due to recent contact activity "
+            f"({recent_window_hours}h)"
+        )
+
+    if not candidates:
+        logger.error("All candidates were excluded by recent-contact rules. Exiting.")
         return
 
     logger.info(f"Found {len(candidates)} total candidates from Apollo")
@@ -172,6 +283,48 @@ def mode_full(db, max_emails, dry_run, log_file, daily_focus: str = ""):
 
     if not enriched:
         logger.error("No enrichment results. Exiting.")
+        return
+
+    # Exclude sent-duplicate recipients by email before writing/drafting.
+    enriched_before_recent_filter = len(enriched)
+    filtered_enriched = []
+    duplicate_examples = []
+    for person in enriched:
+        email = (person.get("email") or "").strip().lower()
+        if not email:
+            filtered_enriched.append(person)
+            continue
+        if email in recent_contact_emails:
+            duplicate_stats["detected"] += 1
+            duplicate_stats["skipped"] += 1
+            if len(duplicate_examples) < 5:
+                duplicate_examples.append(email)
+            continue
+        try:
+            already_sent = _was_sent_duplicate(email, recent_window_hours, sent_duplicate_cache)
+        except RuntimeError as e:
+            logger.error(str(e))
+            print("\nDuplicate protection check failed.")
+            print("Run ./venv/bin/python reauth_gmail.py and try again.")
+            return
+        if already_sent:
+            duplicate_stats["detected"] += 1
+            duplicate_stats["skipped"] += 1
+            if len(duplicate_examples) < 5:
+                duplicate_examples.append(email)
+            continue
+        filtered_enriched.append(person)
+    enriched = filtered_enriched
+
+    skipped_recent_enriched = enriched_before_recent_filter - len(enriched)
+    if skipped_recent_enriched:
+        logger.info(
+            f"Excluded {skipped_recent_enriched} enriched contacts due to duplicate/sent checks "
+            f"({recent_window_hours}h): {duplicate_examples}"
+        )
+
+    if not enriched:
+        logger.error("All enriched contacts were excluded by recent-contact rules. Exiting.")
         return
 
     logger.info(f"Successfully enriched {len(enriched)} contacts with emails")
@@ -294,6 +447,10 @@ def mode_full(db, max_emails, dry_run, log_file, daily_focus: str = ""):
     print(f"  Enriched (with email):  {len(enriched)}")
     print(f"  Emails written:         {len(emails)}")
     print(f"  Drafts created:         {drafted_count}")
+    print(
+        f"  Duplicate protection:   {duplicate_stats['detected']} detected, "
+        f"{duplicate_stats['deleted']} drafts deleted, {duplicate_stats['skipped']} skipped"
+    )
     print(f"  CSV export:             {csv_path}")
     print(f"  Log file:               {log_file}")
     print_db_stats(db)
@@ -304,7 +461,7 @@ def mode_full(db, max_emails, dry_run, log_file, daily_focus: str = ""):
 # MODE 2: REWRITE EXISTING DRAFTS
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def mode_rewrite(db, max_emails, dry_run, log_file):
+def mode_rewrite(db, max_emails, dry_run, log_file, recent_window_hours: int | None = None):
     """
     Rewrite existing Gmail drafts with the latest email prompt/tone.
     Pulls drafts DIRECTLY from Gmail — no dependency on contacts_history.json.
@@ -314,6 +471,15 @@ def mode_rewrite(db, max_emails, dry_run, log_file):
     - FALLBACK: if DB is empty, detect outreach drafts by body content phrases
     """
     logger = logging.getLogger("pipeline.rewrite")
+    recent_window_hours = max(1, int(recent_window_hours or config.RECENT_CONTACT_HOURS))
+    try:
+        gmail_drafter.ensure_sent_check_available()
+        logger.info("Sent-check readiness: OK")
+    except RuntimeError as e:
+        logger.error(str(e))
+        print("\nDuplicate protection check failed.")
+        print("Run ./venv/bin/python reauth_gmail.py and try again.")
+        return
 
     # Default: process ALL outreach drafts (no hard cap)
     # --max flag overrides; dry-run defaults to 3 for quick preview
@@ -356,7 +522,11 @@ def mode_rewrite(db, max_emails, dry_run, log_file):
 
     rewritten_count = 0
     failed_count = 0
+    duplicate_detected = 0
+    duplicate_deleted = 0
+    duplicate_skipped = 0
     apollo_lookup_cache = {}
+    sent_duplicate_cache = {}
 
     def _clean_text(value) -> str:
         """Normalize nullable/non-string values to a safe stripped string."""
@@ -368,6 +538,30 @@ def mode_rewrite(db, max_emails, dry_run, log_file):
         draft_id = draft_info["draft_id"]
         to_email = draft_info["to_email"]
         old_body = draft_info["body_text"]
+
+        try:
+            already_sent = _was_sent_duplicate(to_email, recent_window_hours, sent_duplicate_cache)
+        except RuntimeError as e:
+            logger.error(str(e))
+            print("\nDuplicate protection check failed.")
+            print("Run ./venv/bin/python reauth_gmail.py and try again.")
+            return
+        if already_sent:
+            duplicate_detected += 1
+            duplicate_skipped += 1
+            print(f"\n--- DRAFT {i + 1} of {len(to_rewrite)} ---")
+            print(f"To:      {to_email}")
+            print("  [DUPLICATE DETECTED] Recipient already emailed in duplicate-protection window.")
+            if dry_run:
+                print(f"  [WOULD DELETE] Duplicate draft {draft_id}")
+            else:
+                if gmail_drafter.delete_draft(draft_id):
+                    duplicate_deleted += 1
+                    print(f"  [DELETED] Duplicate draft {draft_id}")
+                else:
+                    failed_count += 1
+                    print(f"  [FAIL] Could not delete duplicate draft {draft_id}")
+            continue
 
         # Apollo-first lookup by recipient email (cached), then draft greeting, then fallback.
         email_key = (to_email or "").strip().lower()
@@ -513,6 +707,10 @@ def mode_rewrite(db, max_emails, dry_run, log_file):
     if not dry_run:
         print(f"  Successfully updated:  {rewritten_count}")
         print(f"  Failed:                {failed_count}")
+    print(
+        f"  Duplicate protection:  {duplicate_detected} detected, "
+        f"{duplicate_deleted} drafts deleted, {duplicate_skipped} skipped"
+    )
     print(f"  Log file:              {log_file}")
 
 
@@ -520,14 +718,86 @@ def mode_rewrite(db, max_emails, dry_run, log_file):
 # MODE 3: DRAFT REMAINING (enriched but not yet drafted)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def mode_draft(db, max_emails, dry_run, log_file):
+def mode_draft(db, max_emails, dry_run, log_file, recent_window_hours: int | None = None):
     """Write emails and create drafts for contacts that are enriched but not yet drafted."""
     logger = logging.getLogger("pipeline.draft")
+    recent_window_hours = max(1, int(recent_window_hours or config.RECENT_CONTACT_HOURS))
+    try:
+        gmail_drafter.ensure_sent_check_available()
+        logger.info("Sent-check readiness: OK")
+    except RuntimeError as e:
+        logger.error(str(e))
+        print("\nDuplicate protection check failed.")
+        print("Run ./venv/bin/python reauth_gmail.py and try again.")
+        return
+
+    sent_duplicate_cache = {}
+    duplicate_stats = {"detected": 0, "deleted": 0, "skipped": 0}
+
+    try:
+        cleanup = gmail_drafter.cleanup_duplicate_outreach_drafts(
+            hours=recent_window_hours,
+            dry_run=dry_run,
+            max_results=500,
+        )
+    except RuntimeError as e:
+        logger.error(str(e))
+        print("\nDuplicate protection check failed.")
+        print("Run ./venv/bin/python reauth_gmail.py and try again.")
+        return
+    duplicate_stats["detected"] += cleanup["duplicates_detected"]
+    duplicate_stats["deleted"] += cleanup["deleted"]
+    duplicate_stats["skipped"] += cleanup["duplicates_detected"]
+    logger.info(
+        "Duplicate draft cleanup (draft mode): "
+        f"detected={cleanup['duplicates_detected']} "
+        f"deleted={cleanup['deleted']} would_delete={cleanup['would_delete']} failed={cleanup['failed']}"
+    )
 
     pending = db.get_enriched_not_drafted()
     if not pending:
         print("No pending contacts found. All enriched contacts already have drafts.")
         print("Use --mode full to search for new contacts, or --import a CSV first.")
+        return
+
+    recent_contact_emails = db.get_recent_contact_emails(hours=recent_window_hours)
+    pending_before_recent_filter = len(pending)
+    filtered_pending = []
+    duplicate_examples = []
+    for contact in pending:
+        email = (contact.get("email") or "").strip().lower()
+        if not email:
+            filtered_pending.append(contact)
+            continue
+        if email in recent_contact_emails:
+            duplicate_stats["detected"] += 1
+            duplicate_stats["skipped"] += 1
+            if len(duplicate_examples) < 5:
+                duplicate_examples.append(email)
+            continue
+        try:
+            already_sent = _was_sent_duplicate(email, recent_window_hours, sent_duplicate_cache)
+        except RuntimeError as e:
+            logger.error(str(e))
+            print("\nDuplicate protection check failed.")
+            print("Run ./venv/bin/python reauth_gmail.py and try again.")
+            return
+        if already_sent:
+            duplicate_stats["detected"] += 1
+            duplicate_stats["skipped"] += 1
+            if len(duplicate_examples) < 5:
+                duplicate_examples.append(email)
+            continue
+        filtered_pending.append(contact)
+    pending = filtered_pending
+    skipped_recent_pending = pending_before_recent_filter - len(pending)
+    if skipped_recent_pending:
+        logger.info(
+            f"Excluded {skipped_recent_pending} pending contacts due to duplicate/sent checks "
+            f"({recent_window_hours}h): {duplicate_examples}"
+        )
+    if not pending:
+        print(f"No pending contacts left after applying {recent_window_hours}h duplicate-contact exclusion.")
         return
 
     to_draft = pending[:max_emails]
@@ -599,6 +869,10 @@ def mode_draft(db, max_emails, dry_run, log_file):
     print("=" * 60)
     print(f"  Emails written:   {len(emails)}")
     print(f"  Drafts created:   {drafted_count}")
+    print(
+        f"  Duplicate protection: {duplicate_stats['detected']} detected, "
+        f"{duplicate_stats['deleted']} drafts deleted, {duplicate_stats['skipped']} skipped"
+    )
     print(f"  CSV export:       {csv_path}")
     print(f"  Log file:         {log_file}")
     print_db_stats(db)
@@ -636,6 +910,50 @@ def do_import(db, csv_path):
 # ═══════════════════════════════════════════════════════════════════════════════
 # Helpers
 # ═══════════════════════════════════════════════════════════════════════════════
+
+def _was_sent_duplicate(email: str, hours: int, cache: dict[str, bool]) -> bool:
+    """
+    Cached sent-history duplicate check.
+    Raises RuntimeError when Gmail sent checks are unavailable.
+    """
+    key = (email or "").strip().lower()
+    if not key:
+        return False
+    if key in cache:
+        return cache[key]
+    value = gmail_drafter.was_sent_to_recipient(key, hours=hours)
+    cache[key] = value
+    return value
+
+
+def _extract_candidate_email(person: dict) -> str:
+    """
+    Best-effort extraction of email from Apollo search candidate payloads.
+    Returns lowercase email or empty string.
+    """
+    if not isinstance(person, dict):
+        return ""
+
+    candidate_keys = (
+        "email",
+        "contact_email",
+        "sanitized_email",
+        "primary_email",
+    )
+    for key in candidate_keys:
+        value = person.get(key, "")
+        if isinstance(value, str) and value.strip():
+            return value.strip().lower()
+
+    org = person.get("organization", {}) or {}
+    if isinstance(org, dict):
+        for key in candidate_keys:
+            value = org.get(key, "")
+            if isinstance(value, str) and value.strip():
+                return value.strip().lower()
+
+    return ""
+
 
 def _extract_first_name_from_draft_body(body_text: str) -> str:
     """
@@ -685,6 +1003,7 @@ Examples:
   python3 run_pipeline.py --mode draft --max 10    # draft 10 contacts
   python3 run_pipeline.py --import contacts.csv    # import CSV then exit
   python3 run_pipeline.py --mode full --dry-run    # preview without creating drafts
+  python3 run_pipeline.py --ui                     # launch sleek preflight UI
         """,
     )
     parser.add_argument("--mode", choices=["full", "rewrite", "draft"], default="full",
@@ -695,6 +1014,8 @@ Examples:
                         help="Max emails to process (default: 25 for full/draft, unlimited for rewrite)")
     parser.add_argument("--dry-run", action="store_true",
                         help="Preview emails without creating Gmail drafts")
+    parser.add_argument("--ui", action="store_true",
+                        help="Open preflight UI to set variable run options before starting")
     args = parser.parse_args()
 
     log_file = setup_logging()
@@ -721,19 +1042,58 @@ Examples:
         sys.exit(1)
 
     # ── Resolve max emails per mode ────────────────────────────────────
-    max_emails = args.max
-    if max_emails == 0 and mode in ("full", "draft"):
-        max_emails = config.MAX_DAILY_EMAILS  # default 25 for these modes
-    # For rewrite mode, 0 means unlimited (handled inside mode_rewrite)
-    daily_focus = prompt_daily_focus(mode)
+    max_emails = args.max if args.max > 0 else (
+        config.MAX_DAILY_EMAILS if mode in ("full", "draft") else 25
+    )
+    # For rewrite mode, 0 still maps to unlimited later; UI uses a concrete preview count.
+    daily_focus = ""
+    daily_location = ""
+    recent_window_hours = config.RECENT_CONTACT_HOURS
+
+    if args.ui:
+        defaults = PreflightSettings(
+            mode=mode,
+            max_emails=max_emails,
+            dry_run=args.dry_run,
+            daily_focus="",
+            daily_location="",
+            recent_hours=config.RECENT_CONTACT_HOURS,
+            email_system_prompt=email_writer.SYSTEM_PROMPT,
+        )
+        selected = collect_preflight_settings(defaults)
+        if selected is None:
+            print("Run canceled in UI.")
+            return
+
+        mode = selected.mode
+        max_emails = selected.max_emails
+        args.dry_run = selected.dry_run
+        daily_focus = selected.daily_focus
+        daily_location = selected.daily_location
+        recent_window_hours = selected.recent_hours
+        email_writer.SYSTEM_PROMPT = selected.email_system_prompt
+    else:
+        # For rewrite mode, 0 means unlimited (handled inside mode_rewrite)
+        if args.max == 0 and mode == "rewrite":
+            max_emails = 0
+        daily_focus = prompt_daily_focus(mode)
+        daily_location = prompt_daily_location(mode)
 
     # ── Run the selected mode ────────────────────────────────────────
     if mode == "full":
-        mode_full(db, max_emails, args.dry_run, log_file, daily_focus=daily_focus)
+        mode_full(
+            db,
+            max_emails,
+            args.dry_run,
+            log_file,
+            daily_focus=daily_focus,
+            daily_location=daily_location,
+            recent_window_hours=recent_window_hours,
+        )
     elif mode == "rewrite":
-        mode_rewrite(db, max_emails, args.dry_run, log_file)
+        mode_rewrite(db, max_emails, args.dry_run, log_file, recent_window_hours=recent_window_hours)
     elif mode == "draft":
-        mode_draft(db, max_emails, args.dry_run, log_file)
+        mode_draft(db, max_emails, args.dry_run, log_file, recent_window_hours=recent_window_hours)
 
     logger.info(f"Pipeline finished ({mode} mode).")
 

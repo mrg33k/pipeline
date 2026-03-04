@@ -13,7 +13,7 @@ import csv
 import json
 import os
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +73,51 @@ class ContactsDB:
 
     def contacted_count(self) -> int:
         return len(self.data["contacts"])
+
+    def _is_recent_contact(self, info: dict, cutoff: datetime) -> bool:
+        """
+        Check whether a contact has recent outreach activity in DB.
+        """
+        for field in ("sent_at", "drafted_at", "rewritten_at"):
+            value = info.get(field, "")
+            if not isinstance(value, str) or not value.strip():
+                continue
+            try:
+                when = datetime.fromisoformat(value.strip())
+            except ValueError:
+                continue
+            if when >= cutoff:
+                return True
+        return False
+
+    def get_recent_contact_ids(self, hours: int = 48) -> set:
+        """
+        Return contact IDs with outreach activity in the last N hours.
+        """
+        if hours <= 0:
+            return set()
+        cutoff = datetime.now() - timedelta(hours=hours)
+        ids = set()
+        for cid, info in self.data["contacts"].items():
+            if self._is_recent_contact(info, cutoff):
+                ids.add(cid)
+        return ids
+
+    def get_recent_contact_emails(self, hours: int = 48) -> set:
+        """
+        Return contact emails with outreach activity in the last N hours.
+        """
+        if hours <= 0:
+            return set()
+        cutoff = datetime.now() - timedelta(hours=hours)
+        emails = set()
+        for info in self.data["contacts"].values():
+            if not self._is_recent_contact(info, cutoff):
+                continue
+            email = (info.get("email") or "").strip().lower()
+            if email:
+                emails.add(email)
+        return emails
 
     # ── Filtered queries ─────────────────────────────────────────────────
 

@@ -18,6 +18,7 @@ Requirements:
 The script requests:
 - 'gmail.compose' (create/manage drafts)
 - 'gmail.settings.basic' (read account signature settings)
+- 'gmail.readonly' (read recent sent recipients for duplicate protection)
 It cannot read your inbox body or send emails on its own.
 """
 
@@ -44,6 +45,7 @@ TOKENS_PATH = os.path.join(SCRIPT_DIR, "gmail_tokens.json")
 SCOPES = [
     "https://www.googleapis.com/auth/gmail.compose",
     "https://www.googleapis.com/auth/gmail.settings.basic",
+    "https://www.googleapis.com/auth/gmail.readonly",
 ]
 
 
@@ -99,7 +101,7 @@ def main():
                 return
             if creds.valid and not _has_required_scopes(token_data):
                 print("Existing tokens are valid but missing required scopes.")
-                print("Starting OAuth flow to grant gmail.settings.basic...")
+                print("Starting OAuth flow to grant required Gmail scopes...")
             elif creds.expired and creds.refresh_token and _has_required_scopes(token_data):
                 print("Tokens are expired. Attempting to refresh...")
                 creds.refresh(Request())

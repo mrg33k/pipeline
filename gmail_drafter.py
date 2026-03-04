@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import re
+import time
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from html.parser import HTMLParser
@@ -43,6 +44,17 @@ OUTREACH_BODY_PHRASES = [
     "keeps coming up",
     "been on my radar",
 ]
+
+
+def _hours_to_newer_than_days(hours: int) -> int:
+    """Convert hour window to Gmail query day window."""
+    if hours <= 0:
+        return 1
+    return max(1, (hours + 23) // 24)
+
+
+def _normalize_email(email: str) -> str:
+    return (email or "").strip().lower()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -332,6 +344,243 @@ def get_outreach_drafts(max_results: int = 200, known_emails: set = None) -> lis
 
     logger.info(f"Found {len(outreach_drafts)} outreach drafts to rewrite")
     return outreach_drafts
+
+
+def ensure_sent_check_available() -> None:
+    """
+    Validate Gmail SENT-query access required for duplicate protection.
+    Raises RuntimeError when unavailable.
+    """
+    service = _get_gmail_service()
+    try:
+        service.users().messages().list(
+            userId="me",
+            labelIds=["SENT"],
+            q="in:sent newer_than:1d",
+            maxResults=1,
+        ).execute()
+    except Exception as e:  # pylint: disable=broad-except
+        raise RuntimeError(
+            "Gmail sent-mail duplicate check is unavailable. "
+            "Run ./venv/bin/python reauth_gmail.py to grant required scopes."
+        ) from e
+
+
+def was_sent_to_recipient(email: str, hours: int = 48) -> bool:
+    """
+    Check whether a message was sent to recipient within the given time window.
+    Raises RuntimeError on Gmail API failures.
+    """
+    email = _normalize_email(email)
+    if not email:
+        return False
+    if hours <= 0:
+        hours = 48
+
+    service = _get_gmail_service()
+    cutoff_ms = int((time.time() - (hours * 3600)) * 1000)
+    days = _hours_to_newer_than_days(hours)
+    query = f'in:sent to:"{email}" newer_than:{days}d'
+
+    try:
+        result = service.users().messages().list(
+            userId="me",
+            labelIds=["SENT"],
+            q=query,
+            maxResults=25,
+        ).execute()
+        stubs = result.get("messages", []) or []
+        if not stubs:
+            return False
+
+        # Verify precise cutoff by message internalDate.
+        for stub in stubs:
+            msg = service.users().messages().get(
+                userId="me",
+                id=stub["id"],
+                format="metadata",
+                metadataHeaders=["To", "Cc", "Bcc"],
+            ).execute()
+            internal_ms = int(msg.get("internalDate", "0") or "0")
+            if internal_ms and internal_ms < cutoff_ms:
+                continue
+
+            payload = msg.get("payload", {}) or {}
+            headers = payload.get("headers", []) or []
+            addrs = []
+            for h in headers:
+                name = (h.get("name", "") or "").lower()
+                if name in {"to", "cc", "bcc"}:
+                    addrs.append(h.get("value", "") or "")
+            parsed = email_lib.utils.getaddresses(addrs)
+            recipients = {_normalize_email(addr) for _, addr in parsed if _normalize_email(addr)}
+            if email in recipients:
+                return True
+        return False
+    except Exception as e:  # pylint: disable=broad-except
+        raise RuntimeError(f"Failed sent-mail duplicate check for {email}: {e}") from e
+
+
+def delete_outreach_draft_if_exists(
+    to_email: str,
+    dry_run: bool = False,
+    known_emails: set | None = None,
+    max_results: int = 500,
+) -> dict:
+    """
+    Delete outreach drafts for a single recipient email.
+    Returns summary dict with found/deleted counts.
+    """
+    target = _normalize_email(to_email)
+    if not target:
+        return {"found": 0, "deleted": 0, "failed": 0, "would_delete": 0}
+
+    drafts = get_outreach_drafts(max_results=max_results, known_emails=known_emails or set())
+    found = [d for d in drafts if _normalize_email(d.get("to_email", "")) == target]
+    deleted = 0
+    failed = 0
+    would_delete = 0
+
+    for draft in found:
+        draft_id = draft["draft_id"]
+        if dry_run:
+            would_delete += 1
+            logger.info(f"WOULD DELETE duplicate outreach draft: {draft_id} -> {target}")
+            continue
+        ok = delete_draft(draft_id)
+        if ok:
+            deleted += 1
+        else:
+            failed += 1
+
+    return {
+        "found": len(found),
+        "deleted": deleted,
+        "failed": failed,
+        "would_delete": would_delete,
+    }
+
+
+def cleanup_duplicate_outreach_drafts(
+    hours: int = 48,
+    dry_run: bool = False,
+    known_emails: set | None = None,
+    max_results: int = 500,
+) -> dict:
+    """
+    Find outreach drafts whose recipients were already emailed within window and delete them.
+    Returns cleanup summary.
+    """
+    drafts = get_outreach_drafts(max_results=max_results, known_emails=known_emails or set())
+    sent_cache: dict[str, bool] = {}
+    duplicates_detected = 0
+    deleted = 0
+    failed = 0
+    would_delete = 0
+
+    for draft in drafts:
+        to_email = _normalize_email(draft.get("to_email", ""))
+        if not to_email:
+            continue
+        if to_email in sent_cache:
+            already_sent = sent_cache[to_email]
+        else:
+            already_sent = was_sent_to_recipient(to_email, hours=hours)
+            sent_cache[to_email] = already_sent
+        if not already_sent:
+            continue
+
+        duplicates_detected += 1
+        draft_id = draft["draft_id"]
+        if dry_run:
+            would_delete += 1
+            logger.info(f"WOULD DELETE duplicate outreach draft: {draft_id} -> {to_email}")
+            continue
+        ok = delete_draft(draft_id)
+        if ok:
+            deleted += 1
+        else:
+            failed += 1
+
+    return {
+        "total_outreach_drafts": len(drafts),
+        "duplicates_detected": duplicates_detected,
+        "deleted": deleted,
+        "failed": failed,
+        "would_delete": would_delete,
+    }
+
+
+def get_recent_sent_recipients(hours: int = 48, max_results: int = 500) -> set[str]:
+    """
+    Return recipient email addresses from SENT messages in the last N hours.
+    Best-effort: returns an empty set if API access is unavailable.
+    """
+    if hours <= 0:
+        return set()
+
+    service = _get_gmail_service()
+    recipients = set()
+    cutoff_ms = int((time.time() - (hours * 3600)) * 1000)
+    days = max(1, (hours + 23) // 24)
+    query = f"in:sent newer_than:{days}d"
+
+    fetched = 0
+    page_token = None
+    try:
+        while fetched < max_results:
+            remaining = max_results - fetched
+            result = service.users().messages().list(
+                userId="me",
+                labelIds=["SENT"],
+                q=query,
+                maxResults=min(200, remaining),
+                pageToken=page_token,
+            ).execute()
+            stubs = result.get("messages", []) or []
+            if not stubs:
+                break
+
+            for stub in stubs:
+                if fetched >= max_results:
+                    break
+                msg = service.users().messages().get(
+                    userId="me",
+                    id=stub["id"],
+                    format="metadata",
+                    metadataHeaders=["To", "Cc", "Bcc"],
+                ).execute()
+                fetched += 1
+
+                internal_ms = int(msg.get("internalDate", "0") or "0")
+                if internal_ms and internal_ms < cutoff_ms:
+                    continue
+
+                payload = msg.get("payload", {}) or {}
+                headers = payload.get("headers", []) or []
+                to_values = []
+                for h in headers:
+                    name = (h.get("name", "") or "").lower()
+                    if name in {"to", "cc", "bcc"}:
+                        to_values.append(h.get("value", "") or "")
+                if not to_values:
+                    continue
+
+                parsed = email_lib.utils.getaddresses(to_values)
+                for _, email_addr in parsed:
+                    email_clean = (email_addr or "").strip().lower()
+                    if email_clean:
+                        recipients.add(email_clean)
+
+            page_token = result.get("nextPageToken")
+            if not page_token:
+                break
+    except Exception as e:
+        logger.warning(f"Could not fetch recent sent recipients: {e}")
+        return set()
+
+    logger.info(f"Recent sent recipients ({hours}h): {len(recipients)}")
+    return recipients
 
 
 def _extract_company_from_subject(subject: str) -> str:
