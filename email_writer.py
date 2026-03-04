@@ -249,7 +249,29 @@ def _classify_industry(company_fact: str, apollo_industry: str) -> str:
     """Classify into a broad industry bucket using the company fact and Apollo industry tag."""
     fact_lower = ((company_fact or "") + " " + (apollo_industry or "")).lower()
 
-    if any(w in fact_lower for w in ["concrete", "roofing", "plumbing", "electrical", "hvac", "construction", "building", "framing", "drywall", "painting contractor"]):
+    if any(
+        w in fact_lower
+        for w in [
+            "concrete",
+            "roofing",
+            "plumbing",
+            "electrical",
+            "hvac",
+            "construction",
+            "building",
+            "framing",
+            "drywall",
+            "painting contractor",
+            "landscaping",
+            "lawn",
+            "tree",
+            "irrigation",
+            "fencing",
+            "paving",
+            "pool service",
+            "cleaning",
+        ]
+    ):
         return "trades"
     if any(w in fact_lower for w in ["restaurant", "food", "dining", "cafe", "bar", "brewery", "pizza", "taco", "sushi", "bakery", "catering"]):
         return "restaurant"
@@ -263,8 +285,6 @@ def _classify_industry(company_fact: str, apollo_industry: str) -> str:
         return "hospitality"
     if any(w in fact_lower for w in ["nonprofit", "non-profit", "charity", "foundation", "philanthropy", "ministry", "church"]):
         return "nonprofit"
-    if any(w in fact_lower for w in ["landscaping", "lawn", "tree", "irrigation", "fencing", "paving", "pool service", "cleaning"]):
-        return "trades"
 
     return "default"
 
