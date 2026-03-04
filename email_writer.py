@@ -5,6 +5,7 @@ Emails follow Patrik's personal style: brief, human, no pitch, just an intro.
 """
 
 import logging
+import random
 import re
 from openai import OpenAI
 
@@ -18,28 +19,25 @@ SYSTEM_PROMPT = """You write cold outreach emails for Patrik Matheson, who runs 
 
 Write emails that sound exactly like a real person dashing off a quick note. Not a marketer. Not a salesperson. Just a local guy who noticed this person.
 
-EXACT FORMULA — each item gets its own paragraph with a blank line between them:
-1. "Hi [First name]," — ALWAYS include the first name. Never just "Hi," alone. Never "Dear" or "Hello."
-2. One simple ice breaker sentence acknowledging that Patrik came across them. See OPENER RULES below.
-3. "Are you already working with someone on web/social stuff?" — use this EXACT phrasing. Always "web/social" — never "web and social" or "social media" or any other variation.
-4. One soft sentence mentioning you had a couple ideas but didn't want to assume anything, so you're introducing yourself first.
-5. Offer to meet locally (say you're in the area) or hop on Zoom. Keep it low-pressure.
-6. Sign off with just: Best,
+EMAIL FORMULA — each item gets its own paragraph with a blank line between them:
 
-OPENER RULES (critical):
-THE OPENER (first line after greeting):
-- If a "Verified fact" is provided in the context, write ONE short casual sentence that shows you're aware of what they do. Use the fact naturally. Examples:
-  - Fact: "Mexican restaurant" → "I've eaten at Los Portales a few times."
-  - Fact: "pool service software for contractors" → "I know you guys work in the pool service space."
-  - Fact: "commercial roofing company" → "I know you guys do a lot of roofing work around here."
-  - Fact: "yoga studio" → "I've seen your studio around town."
-- For trade-style facts (construction, roofing, concrete, plumbing, HVAC, electrical, contractor), prefer wording with "a lot of" when natural.
-- If NO fact is provided, use a simple generic opener like "I came across you guys recently." or "Your name came up recently."
-- NEVER invent details that are not in the verified fact.
-- NEVER mention their website, Google, LinkedIn, or how you found them.
-- NEVER describe their full business model or compliment them.
-- NEVER use specific street names, neighborhoods, or addresses.
-- Keep it to ONE sentence. Short. Casual.
+1. "Hi [First name]," — ALWAYS include the first name. Never "Hi," alone. If no name available, use "Hi there,".
+
+2. THE OPENER: One short casual sentence acknowledging what they do. Keep the industry description to 1-3 words. Do not elaborate. Do not compliment. Do not describe their full business. Examples:
+   - "I know you guys do concrete work."
+   - "I've eaten at [restaurant name] a few times."
+   - "I know you guys work in the pool service space."
+   - "I've seen your studio around town."
+   - If no company fact is provided, use: "I came across you guys recently." or "Your name came up recently."
+   RULES: NEVER invent details not in the verified fact. NEVER mention their website. NEVER use more than one sentence. NEVER use adjectives like "great", "amazing", "impressive".
+
+3. THE IDEA TEASE: One sentence that hints you have a relevant idea for them. An "idea tease" sentence will be provided in the context — use it exactly as given or adapt it very slightly to sound natural. Do NOT name a specific service. Do NOT say "video", "content creation", "marketing", "social media management", or any service name. Just tease that you have an idea.
+
+4. THE CLOSE: "I didn't want to assume anything, so I thought I'd introduce myself first. I'm around the Phoenix area this week if you want to meet up, or happy to hop on Zoom."
+
+5. Sign off with just: Best,
+
+IMPORTANT: Do NOT include "Are you already working with someone on web/social stuff?" or any variation of that question. It is removed from the email entirely.
 
 COMPANY NAME RULES:
 - NEVER use the company name if it is an abbreviation, acronym, or sounds corporate/unnatural (e.g. "LCRETW", "GTICL", "MREG", "CFJPOGP"). Use "you guys" instead.
@@ -49,7 +47,7 @@ COMPANY NAME RULES:
 
 LOCATION RULES:
 - Do NOT reference any specific location in the opener.
-- In the meeting offer (item 5), you CAN say "I'm in the area" or "I'm around the Phoenix area" — keep it general.
+- In the close sentence, keep location phrasing general.
 - NEVER invent or guess a specific street name, address, or neighborhood.
 
 FORMATTING:
@@ -64,42 +62,90 @@ RULES:
 - No filler phrases like "I hope this email finds you well"
 - No compliments like "amazing" or "incredible"
 - No elaborate descriptions of what Patrik does or what Ahead of Market offers
-- No specific service pitches, no video concept breakdowns
+- No specific service pitches
 
 EXAMPLES (match this tone, structure, and formatting exactly):
 
 Example 1:
-Hi Bryan,
+Hi Paul,
 
-I came across you guys recently.
+I know you guys do concrete work.
 
-Are you already working with someone on web/social stuff?
+I had an idea for showing off some of your project work.
 
-I had a couple ideas for you guys, but I didn't want to assume anything, so I thought I'd introduce myself first. I'm in the area most of this week if you'd prefer to meet briefly, otherwise I'm happy to hop on Zoom as well.
+I didn't want to assume anything, so I thought I'd introduce myself first. I'm around the Phoenix area this week if you want to meet up, or happy to hop on Zoom.
 
 Best,
 
 Example 2:
-Hi Sarah,
+Hi Bryan,
 
-Your name keeps coming up.
+I've eaten at Francine a few times.
 
-Are you already working with someone on web/social stuff?
+I had an idea around keeping your social and menu content looking sharp.
 
-I had a couple ideas but didn't want to assume anything, so I thought I'd introduce myself first. I'm around the area this week if you want to meet up, or happy to hop on Zoom.
+I didn't want to assume anything, so I thought I'd introduce myself first. I'm around the Phoenix area this week if you want to meet up, or happy to hop on Zoom.
 
 Best,
 
 Example 3:
-Hi Marcus,
+Hi Priya,
 
-You guys came up on my radar recently.
+I know you guys work in the software space.
 
-Are you already working with someone on web/social stuff?
+I had a thought about making what you guys built easier to understand at a glance.
 
-I had a couple ideas for you guys, but I didn't want to assume anything, so I thought I'd introduce myself first. I'm in the area most of this week if you'd prefer to meet briefly, otherwise happy to hop on Zoom.
+I didn't want to assume anything, so I thought I'd introduce myself first. I'm around the Phoenix area this week if you want to meet up, or happy to hop on Zoom.
 
 Best,"""
+
+IDEA_TEASES = {
+    "construction": [
+        "I had an idea for showing off some of your project work.",
+        "I had a thought about helping you guys stand out when you're bidding on jobs.",
+        "I had an idea around helping your crew's work get the attention it deserves.",
+    ],
+    "restaurant": [
+        "I had an idea around keeping your social and menu content looking sharp.",
+        "I had a thought about getting your food looking as good online as it does in person.",
+        "I had an idea for keeping your social presence fresh without adding to your plate.",
+    ],
+    "tech": [
+        "I had an idea for showing off what your product does without it feeling like a sales pitch.",
+        "I had a thought about making what you guys built easier to understand at a glance.",
+        "I had an idea for showing people how your product actually works day to day.",
+    ],
+    "wellness": [
+        "I had an idea for capturing what your space actually feels like.",
+        "I had a thought about showing people the experience before they walk in.",
+        "I had an idea around getting more people to see what you guys are about.",
+    ],
+    "real_estate": [
+        "I had an idea for making your listings stand out before people even schedule a tour.",
+        "I had a thought about showing off your properties in a way that stops the scroll.",
+        "I had an idea around helping your brand stand out in a crowded market.",
+    ],
+    "hospitality": [
+        "I had an idea for showing off the experience you guys deliver.",
+        "I had a thought about capturing what makes your place worth visiting.",
+        "I had an idea around helping more people discover what you guys are doing.",
+    ],
+    "trades": [
+        "I had an idea for showing off some of your project work.",
+        "I had a thought about helping you guys recruit better crews.",
+        "I had an idea around making your work speak for itself online.",
+    ],
+    "nonprofit": [
+        "I had an idea for helping more people understand the work you guys do.",
+        "I had a thought about telling your story in a way that actually moves people.",
+        "I had an idea around getting your mission in front of more of the right people.",
+    ],
+    "default": [
+        "I had a couple ideas for you guys.",
+        "I had a thought I wanted to run by you.",
+        "I had an idea I think could be useful for you guys.",
+    ],
+}
 
 SUBJECT_TEMPLATE = config.EMAIL_SUBJECT_TEMPLATE
 _raw_subject_company_mode = (config.SUBJECT_COMPANY_MODE or "full").strip().lower()
@@ -170,44 +216,57 @@ def _is_abbreviation(name: str) -> bool:
 
 
 def _build_context(profile: dict) -> str:
-    """Build a minimal user prompt with only the data the LLM needs."""
     first_name = (profile.get("first_name") or "there").strip()
     if not first_name:
         first_name = "there"
     company = profile.get("company_name", "")
-    industry = profile.get("company_industry", "")
-    company_fact = (profile.get("company_fact") or "").strip()
+    company_fact = profile.get("company_fact", "")
+    industry = profile.get("industry", "")
+    city = profile.get("city", "")
+    state = profile.get("state", "")
 
-    # Company name note
-    if company and (_is_abbreviation(company) or len(company) > 30):
-        company_note = (
-            f"The company name '{company}' is an abbreviation or very long. "
-            f"Do NOT use it in the email. Use 'you guys' instead."
-        )
-    elif company:
-        company_note = (
-            f"The company name is '{company}'. You may use it in the opener if it sounds natural and short, "
-            f"but you don't have to. When in doubt, skip it and use 'you guys'."
-        )
-    else:
-        company_note = "No company name available. Use 'you guys'."
+    industry_bucket = _classify_industry(company_fact, industry)
+    tease_options = IDEA_TEASES.get(industry_bucket, IDEA_TEASES["default"])
+    idea_tease = random.choice(tease_options)
 
-    fact_line = f"Verified fact about their company: {company_fact}\n" if company_fact else ""
+    lines = [
+        f"Write a cold outreach email to {first_name}.",
+        f"Company: {company}" if company else "",
+        f"Verified fact about their company: {company_fact}" if company_fact else "",
+        f"City: {city}" if city else "",
+        f"State: {state}" if state else "",
+        "",
+        f"Idea tease sentence to use: {idea_tease}",
+        "",
+        f"IMPORTANT: Start with 'Hi {first_name},'",
+        "Follow the exact formula in the system prompt.",
+    ]
 
-    return (
-        f"Write a cold outreach email to {first_name}.\n"
-        f"Company: {company}\n"
-        f"Industry: {industry}\n"
-        f"{fact_line}"
-        f"{company_note}\n\n"
-        f"IMPORTANT: Start with 'Hi {first_name},'\n"
-        f"IMPORTANT: If a verified fact is provided, opener should use only that fact in one short casual sentence. "
-        f"If no verified fact is provided, use a generic opener.\n"
-        f"IMPORTANT: No walking, no driving, no streets, no neighborhoods, no physical locations. "
-        f"Do not mention website, Google, LinkedIn, or how you found them.\n"
-        f"IMPORTANT: NEVER invent details beyond the verified fact.\n"
-        f"Follow the formula exactly."
-    )
+    return "\n".join(line for line in lines if line is not None)
+
+
+def _classify_industry(company_fact: str, apollo_industry: str) -> str:
+    """Classify into a broad industry bucket using the company fact and Apollo industry tag."""
+    fact_lower = ((company_fact or "") + " " + (apollo_industry or "")).lower()
+
+    if any(w in fact_lower for w in ["concrete", "roofing", "plumbing", "electrical", "hvac", "construction", "building", "framing", "drywall", "painting contractor"]):
+        return "trades"
+    if any(w in fact_lower for w in ["restaurant", "food", "dining", "cafe", "bar", "brewery", "pizza", "taco", "sushi", "bakery", "catering"]):
+        return "restaurant"
+    if any(w in fact_lower for w in ["software", "saas", "app", "platform", "tech", "ai", "data", "cloud"]):
+        return "tech"
+    if any(w in fact_lower for w in ["yoga", "fitness", "gym", "wellness", "spa", "pilates", "meditation", "health"]):
+        return "wellness"
+    if any(w in fact_lower for w in ["real estate", "realtor", "property", "homes", "mortgage", "brokerage"]):
+        return "real_estate"
+    if any(w in fact_lower for w in ["hotel", "resort", "hospitality", "lodging", "inn", "travel"]):
+        return "hospitality"
+    if any(w in fact_lower for w in ["nonprofit", "non-profit", "charity", "foundation", "philanthropy", "ministry", "church"]):
+        return "nonprofit"
+    if any(w in fact_lower for w in ["landscaping", "lawn", "tree", "irrigation", "fencing", "paving", "pool service", "cleaning"]):
+        return "trades"
+
+    return "default"
 
 
 def _build_subject(profile: dict) -> str:

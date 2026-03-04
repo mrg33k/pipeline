@@ -76,13 +76,17 @@ def get_company_fact(website_url: str) -> str:
                 {
                     "role": "system",
                     "content": (
-                        "You extract one simple fact from website text. "
-                        "Return ONLY a short phrase (under 10 words) describing what this company does or who they serve. "
-                        'Examples of good responses: "pool service software for contractors" / "Mexican restaurant" / '
-                        '"custom home builder" / "hotel staffing agency" / "yoga studio" / "commercial roofing company". '
-                        "Do not return a sentence. Do not add opinions. Do not add adjectives like "
-                        '"great" or "leading". Just the core fact. If you cannot determine what they do, '
-                        "return exactly: UNKNOWN"
+                        "You extract what a company does from their website text. "
+                        "Return ONLY 1-3 words describing their core business. Not a sentence. "
+                        "Not a description. Just the simplest possible label.\n\n"
+                        'Good examples: "concrete work" / "restaurants" / "pool service software" / '
+                        '"yoga studio" / "custom homes" / "hotel staffing" / "roofing" / "landscaping" / '
+                        '"Mexican food" / "fitness studio" / "HR software" / "commercial cleaning"\n\n'
+                        'Bad examples (too long/detailed): "residential and commercial concrete and plumbing services" '
+                        '/ "full-service digital marketing agency" / "award-winning Mediterranean restaurant"\n\n'
+                        'Strip all adjectives. Strip "residential and commercial." Strip "full-service." '
+                        "Just the core thing they do in 1-3 words.\n\n"
+                        "If you cannot determine what they do, return exactly: UNKNOWN"
                     ),
                 },
                 {"role": "user", "content": extracted_website_text},
@@ -102,4 +106,3 @@ def get_company_fact(website_url: str) -> str:
         return ""
 
     return fact
-
