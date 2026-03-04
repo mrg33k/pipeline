@@ -147,10 +147,7 @@ class _DashboardState:
     def outreach_drafts(self) -> list[dict]:
         def _load():
             try:
-                known_emails, _ = self.apollo_email_set()
-                if not known_emails:
-                    return []
-                drafts = gmail_drafter.get_outreach_drafts(max_results=200, known_emails=known_emails)
+                drafts = gmail_drafter.get_outreach_drafts(max_results=500)
                 for draft in drafts:
                     draft["to_email"] = (draft.get("to_email") or "").strip().lower()
                 return drafts
@@ -171,16 +168,15 @@ class _DashboardState:
         def _load():
             try:
                 activity = gmail_drafter.get_recent_sent_activity(
-                    hours=24 * 45,
+                    hours=24 * 365 * 5,
                     max_results=120,
-                    allowed_recipients=known_emails or None,
                 )
                 accounted = {
                     (item.get("to_email") or "").strip().lower()
                     for item in activity
                     if (item.get("to_email") or "").strip()
                 }
-                recent_db_emails = self.db.get_recent_contact_emails(hours=24 * 45)
+                recent_db_emails = self.db.get_recent_contact_emails(hours=24 * 365 * 5)
                 db_contacts = (self.db.data or {}).get("contacts", {}) or {}
                 latest_by_email: dict[str, str] = {}
                 for info in db_contacts.values():
@@ -229,7 +225,7 @@ class _DashboardState:
             try:
                 return gmail_drafter.get_thread_history_for_recipient(
                     target,
-                    days=365,
+                    days=365 * 5,
                     max_threads=12,
                     max_messages=60,
                 )
@@ -501,7 +497,9 @@ def _dashboard_page() -> str:
     * { box-sizing: border-box; }
     body {
       margin: 0;
-      min-height: 100vh;
+      height: 100vh;
+      width: 100vw;
+      overflow: hidden;
       background:
         radial-gradient(90rem 40rem at 10% -10%, rgba(74, 126, 206, .22), transparent 50%),
         radial-gradient(80rem 30rem at 90% 110%, rgba(42, 98, 130, .20), transparent 50%),
@@ -510,89 +508,35 @@ def _dashboard_page() -> str:
       font-family: "SF Pro Text", "Helvetica Neue", Helvetica, Arial, sans-serif;
       font-size: 12px;
       line-height: 1.4;
-      display: grid;
-      place-items: center;
-      padding: 16px;
     }
     .shell {
-      width: min(1440px, 98vw);
-      height: min(920px, 95vh);
-      border: 1px solid var(--line);
-      border-radius: 14px;
-      background: linear-gradient(180deg, rgba(21,30,44,.65), rgba(10,15,22,.85));
-      box-shadow: 0 18px 65px rgba(0,0,0,.45);
-      display: grid;
-      grid-template-columns: 82px 1fr;
-    }
-    .rail {
-      background: rgba(5,8,12,.85);
-      border-right: 1px solid #1b2430;
       display: flex;
       flex-direction: column;
-      align-items: center;
-      gap: 10px;
-      padding: 12px 8px;
-    }
-    .rail .logo {
-      width: 48px;
-      height: 48px;
-      border-radius: 12px;
-      display: grid;
-      place-items: center;
-      background: #f6f8fc;
-      color: #111721;
-      font-weight: 700;
-      font-size: 15px;
-      margin-bottom: 10px;
-    }
-    .rail button {
-      width: 46px;
-      height: 46px;
-      border: 1px solid #2a3447;
-      border-radius: 12px;
-      background: #0f1623;
-      color: #b5c4d9;
-      cursor: pointer;
-      font-size: 11px;
-    }
-    .rail button.active {
-      background: #e9edf7;
-      color: #101724;
-      border-color: #d4dceb;
-      font-weight: 700;
-    }
-    .main {
-      padding: 14px 16px 16px;
-      display: grid;
-      grid-template-rows: auto auto auto 1fr auto;
+      height: 100vh;
+      width: 100vw;
+      overflow: hidden;
+      padding: 12px;
       gap: 12px;
+      background: linear-gradient(180deg, rgba(21,30,44,.65), rgba(10,15,22,.85));
     }
     .topbar {
-      display: grid;
-      grid-template-columns: 1fr auto auto;
-      gap: 10px;
+      display: flex;
       align-items: center;
+      justify-content: space-between;
+      gap: 8px;
     }
-    .search {
-      border: 1px solid var(--line);
-      border-radius: 10px;
-      background: #0c121b;
-      color: var(--ink);
-      padding: 10px 12px;
-      font: inherit;
-      outline: none;
-    }
-    .search:focus { border-color: #3e5878; }
+    .topbar .title { font-weight: 700; font-size: 14px; letter-spacing: .03em; }
     .btn {
       border: 1px solid #32425a;
       border-radius: 10px;
       background: #121b29;
       color: #dce5f3;
-      padding: 9px 11px;
+      padding: 8px 11px;
       cursor: pointer;
       font-weight: 600;
       font-size: 11px;
     }
+    .btn:disabled { opacity: 0.55; cursor: not-allowed; }
     .warn {
       border: 1px solid rgba(255, 209, 102, .45);
       background: rgba(255, 209, 102, .12);
@@ -608,11 +552,10 @@ def _dashboard_page() -> str:
       border-radius: 9px;
       padding: 8px 10px;
       display: none;
-      margin-top: 6px;
     }
     .stats {
       display: grid;
-      grid-template-columns: repeat(6, minmax(120px, 1fr));
+      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
       gap: 10px;
     }
     .stat {
@@ -620,51 +563,83 @@ def _dashboard_page() -> str:
       border-radius: 10px;
       background: linear-gradient(180deg, rgba(21,31,46,.90), rgba(13,20,31,.95));
       padding: 10px;
+      min-height: 78px;
     }
     .stat .label { color: var(--muted); text-transform: uppercase; font-size: 10px; letter-spacing: .08em; }
     .stat .value { margin-top: 6px; font-size: 20px; font-weight: 700; }
-    .panes {
-      min-height: 0;
+
+    .content {
       display: grid;
-      grid-template-columns: minmax(380px, 1.05fr) minmax(380px, 1fr);
+      grid-template-columns: 320px 1fr 1.2fr;
       gap: 12px;
+      height: 100%;
+      min-height: 0;
     }
-    .card {
+
+    .sidebar {
+      background: rgba(5,8,12,.85);
+      border: 1px solid #1b2430;
+      border-radius: 12px;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+      min-height: 0;
+    }
+    .sidebar h3 { margin: 0; font-size: 13px; letter-spacing: .04em; text-transform: uppercase; color: #c3d2e7; }
+    .filter-block { display: grid; gap: 6px; }
+    .filter-block label { color: var(--muted); font-size: 11px; }
+    #search {
       border: 1px solid var(--line);
       border-radius: 10px;
-      background: rgba(12,18,27,.84);
-      min-height: 0;
-      display: grid;
-      grid-template-rows: auto 1fr;
-    }
-    .card-head {
-      border-bottom: 1px solid #253146;
+      background: #0c121b;
+      color: var(--ink);
       padding: 10px 12px;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 8px;
+      font: inherit;
+      outline: none;
+      width: 100%;
     }
-    .tabs { display: inline-flex; gap: 6px; }
-    .tab {
+    #search:focus { border-color: #3e5878; }
+    select, .chip-btn {
       border: 1px solid #2f3f56;
-      border-radius: 8px;
-      padding: 6px 8px;
-      color: #b9c6da;
+      border-radius: 9px;
       background: #141d2b;
+      color: #dce5f3;
+      padding: 8px 10px;
+      font: inherit;
       cursor: pointer;
-      font-size: 11px;
     }
-    .tab.active {
+    .chip-row { display: flex; flex-wrap: wrap; gap: 6px; }
+    .chip-btn.active {
       background: #e7eef9;
       border-color: #d4deec;
       color: #101825;
       font-weight: 700;
     }
-    .list {
+
+    .contact-list-pane, .detail-pane {
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: rgba(12,18,27,.84);
+      display: grid;
+      grid-template-rows: auto 1fr;
       min-height: 0;
-      overflow: auto;
-      padding: 8px;
+    }
+    .pane-head {
+      border-bottom: 1px solid #253146;
+      padding: 12px 14px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+    }
+    .pane-head h3 { margin: 0; font-size: 14px; }
+    .pane-head .meta { color: var(--muted); }
+
+    #results, #detail-body {
+      min-height: 0;
+      overflow-y: auto;
+      padding: 10px;
       display: grid;
       gap: 8px;
       align-content: start;
@@ -687,33 +662,17 @@ def _dashboard_page() -> str:
     }
     .name { font-size: 12px; font-weight: 600; }
     .meta { color: var(--muted); font-size: 11px; }
-    .chips { display: flex; gap: 6px; flex-wrap: wrap; }
-    .chip {
-      border: 1px solid #34455f;
-      border-radius: 99px;
-      background: var(--chip);
-      color: #c5d2e3;
-      padding: 2px 7px;
-      font-size: 10px;
-      letter-spacing: .01em;
+    .status-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      display: inline-block;
     }
-    .chip.ok { border-color: rgba(150, 242, 176, .5); color: #bff9cf; }
-    .chip.warn { border-color: rgba(255, 209, 102, .5); color: #ffe7aa; }
-    .detail {
-      min-height: 0;
-      overflow: auto;
-      padding: 12px;
-      display: grid;
-      gap: 12px;
-      align-content: start;
-    }
-    .detail h3 { margin: 0; font-size: 14px; }
-    .detail .subtitle { color: var(--muted); margin-top: 2px; }
-    .timeline {
-      display: grid;
-      gap: 8px;
-    }
-    .event {
+    .dot-sent { background: #53e68c; }
+    .dot-draft { background: #f5c86c; }
+    .dot-none { background: #4b5568; }
+
+    .detail-body .msg {
       border: 1px solid #2d3b52;
       border-radius: 8px;
       background: #111928;
@@ -721,70 +680,70 @@ def _dashboard_page() -> str:
       display: grid;
       gap: 4px;
     }
-    .event .ts { color: #9eb1cb; font-size: 10px; }
-    .event .sub { color: #9cb0cb; font-size: 11px; }
-    .pre {
-      white-space: pre-wrap;
-      color: #d2deee;
-      font-size: 11px;
-      border-top: 1px dashed #2f3d53;
-      padding-top: 6px;
-      margin-top: 2px;
-    }
-    .activity .row { cursor: default; }
-    @media (max-width: 1200px) {
-      .stats { grid-template-columns: repeat(3, minmax(140px, 1fr)); }
-      .panes { grid-template-columns: 1fr; }
-      .shell { height: auto; min-height: 95vh; }
+    .msg .ts { color: #9eb1cb; font-size: 10px; }
+    .msg .badge { border-radius: 6px; padding: 2px 6px; font-size: 10px; text-transform: uppercase; }
+    .badge.sent { background: rgba(83,230,140,.12); border: 1px solid rgba(83,230,140,.45); color: #b7f4ce; }
+    .badge.draft { background: rgba(245,200,108,.12); border: 1px solid rgba(245,200,108,.45); color: #ffe7aa; }
+    .badge.recv { background: rgba(134,211,255,.12); border: 1px solid rgba(134,211,255,.45); color: #d2ecff; }
+    .msg pre { background: #0b111b; border: 1px solid #1f2a3d; border-radius: 8px; padding: 8px; margin: 0; max-height: 220px; overflow: auto; color: #d2deee; white-space: pre-wrap; }
+
+    @media (max-width: 1100px) {
+      .content { grid-template-columns: 1fr; grid-template-rows: auto auto auto; height: auto; }
+      .shell { height: auto; min-height: 100vh; }
     }
   </style>
 </head>
 <body>
-  <div class="shell">
-    <aside class="rail">
-      <div class="logo">AOM</div>
-      <button class="active" title="Overview">OV</button>
-      <button title="Apollo">AP</button>
-      <button title="Drafts">DR</button>
-      <button title="Sent">SE</button>
-    </aside>
-    <main class="main">
-      <div class="topbar">
-        <input id="search" class="search" placeholder="Search Apollo contacts, drafts, sent history..." />
-        <button id="refresh" class="btn">Sync Gmail</button>
-        <button id="clear" class="btn">Clear</button>
+  <div class=\"shell\">
+    <div class=\"topbar\">
+      <div class=\"title\">AOM Outreach Dashboard</div>
+      <div class=\"actions\" style=\"display:flex; gap:8px;\">
+        <button id=\"refresh\" class=\"btn\">Sync Gmail</button>
+        <button id=\"clear\" class=\"btn\">Clear</button>
       </div>
-      <div id="sentWarn" class="warn"></div>
-      <div id="errorBox" class="errorbox"></div>
-      <section id="stats" class="stats"></section>
-      <section class="panes">
-        <article class="card">
-          <div class="card-head">
-            <strong>Search Results</strong>
-            <div class="tabs">
-              <button class="tab active" data-view="all">All</button>
-              <button class="tab" data-view="apollo">Apollo</button>
-              <button class="tab" data-view="drafts">Drafts</button>
-              <button class="tab" data-view="sent">Sent</button>
-            </div>
+    </div>
+    <div id=\"sentWarn\" class=\"warn\"></div>
+    <div id=\"errorBox\" class=\"errorbox\"></div>
+    <section id=\"stats\" class=\"stats\"></section>
+    <div class=\"content\">
+      <aside class=\"sidebar\">
+        <h3>Filters</h3>
+        <div id=\"search-container\" class=\"filter-block\">
+          <label for=\"search\">Search</label>
+          <input id=\"search\" placeholder=\"Search contacts, drafts, sent...\" />
+        </div>
+        <div id=\"status-filter-container\" class=\"filter-block\">
+          <label>Status</label>
+          <div id=\"status-chips\" class=\"chip-row\"></div>
+        </div>
+        <div id=\"industry-filter-container\" class=\"filter-block\">
+          <label for=\"industry-filter\">Industry</label>
+          <select id=\"industry-filter\"></select>
+        </div>
+        <div id=\"sort-container\" class=\"filter-block\">
+          <label>Sort</label>
+          <div id=\"sort-chips\" class=\"chip-row\"></div>
+        </div>
+      </aside>
+      <main class=\"contact-list-pane\">
+        <div class=\"pane-head\">
+          <h3>Contacts</h3>
+          <span id=\"results-count\" class=\"meta\"></span>
+        </div>
+        <div id=\"results\" class=\"list\"></div>
+      </main>
+      <aside class=\"detail-pane\">
+        <div class=\"pane-head\">
+          <div>
+            <h3 id=\"detail-name\">Select a contact</h3>
+            <div id=\"detail-meta\" class=\"meta\"></div>
           </div>
-          <div id="results" class="list"></div>
-        </article>
-        <article class="card">
-          <div class="card-head">
-            <strong>Contact Activity</strong>
-            <span id="detailMeta" class="meta"></span>
-          </div>
-          <div id="detail" class="detail"></div>
-        </article>
-      </section>
-      <section class="card activity">
-        <div class="card-head"><strong>Activity Feed</strong><span class="meta">Runs, drafts, and sent events</span></div>
-        <div id="activity" class="list"></div>
-      </section>
-    </main>
+        </div>
+        <div id=\"detail-body\" class=\"detail-body\"></div>
+      </aside>
+    </div>
   </div>
-  <script src="/static/dashboard.js"></script>
+  <script src=\"/static/dashboard.js\"></script>
 </body>
 </html>
 """
@@ -792,7 +751,14 @@ def _dashboard_page() -> str:
 
 def _dashboard_script() -> str:
     return """
-const state = { q: "", view: "all", selectedEmail: "" };
+const state = {
+  q: "",
+  selectedEmail: "",
+  industryFilter: "all",
+  statusFilter: "all",
+  sortBy: "latest_activity",
+};
+
 let allData = {
   summary: {},
   results: [],
@@ -801,13 +767,13 @@ let allData = {
   contacts_error: "",
 };
 
-const byId = id => document.getElementById(id);
-const esc = (v) => (v || "").replace(/[&<>"']/g, ch => ({
+const byId = (id) => document.getElementById(id);
+const esc = (v) => (v || "").replace(/[&<>"']/g, (ch) => ({
   "&": "&amp;",
   "<": "&lt;",
   ">": "&gt;",
   '"': "&quot;",
-  "'": "&#39;"
+  "'": "&#39;",
 }[ch]));
 
 function debounce(fn, delayMs) {
@@ -825,14 +791,6 @@ function fmtTs(ts) {
   return d.toLocaleString();
 }
 
-function rowChips(item) {
-  const chips = [];
-  chips.push(`<span class="chip">${esc(item.type || "contact")}</span>`);
-  if (item.has_draft) chips.push('<span class="chip warn">draft</span>');
-  if (item.has_sent) chips.push('<span class="chip ok">sent</span>');
-  return chips.join("");
-}
-
 function matchQuery(item, q) {
   if (!q) return true;
   const haystack = [
@@ -846,45 +804,48 @@ function matchQuery(item, q) {
     item.to_email,
     item.to_raw,
   ].join(" ").toLowerCase();
-  return q.split(/\\s+/).filter(Boolean).every(part => haystack.includes(part));
-}
-
-function sortResults(items) {
-  return [...items].sort((a, b) => {
-    const sentA = a.has_sent ? 1 : 0;
-    const sentB = b.has_sent ? 1 : 0;
-    if (sentA !== sentB) return sentB - sentA;
-    const tsA = a.latest_ts || "";
-    const tsB = b.latest_ts || "";
-    return tsA < tsB ? 1 : (tsA > tsB ? -1 : 0);
-  });
+  return q.split(/\\s+/).filter(Boolean).every((part) => haystack.includes(part));
 }
 
 function getFilteredResults() {
   const items = Array.isArray(allData.results) ? allData.results : [];
-  const view = state.view || "all";
   const q = (state.q || "").trim().toLowerCase();
-  const contactEmails = new Set(
-    items
-      .filter(x => (x.type || "contact") === "contact")
-      .map(x => (x.email || "").toLowerCase())
-      .filter(Boolean)
-  );
+  const industryFilter = (state.industryFilter || "all").toLowerCase();
+  const statusFilter = state.statusFilter || "all";
+  const sortBy = state.sortBy || "latest_activity";
 
-  let filtered = items.filter(item => {
-    const type = item.type || "contact";
-    if (view === "apollo") return type === "contact";
-    if (view === "drafts") return type === "draft";
-    if (view === "sent") return type === "sent";
-    if (type === "contact") return true;
-    const email = (item.email || "").toLowerCase();
-    return !email || !contactEmails.has(email);
-  });
+  let filtered = items;
+
+  if (statusFilter !== "all") {
+    filtered = filtered.filter((item) => {
+      const hasDraft = !!item.has_draft;
+      const hasSent = !!item.has_sent;
+      if (statusFilter === "drafted") return hasDraft;
+      if (statusFilter === "sent") return hasSent;
+      if (statusFilter === "not_contacted") return !hasDraft && !hasSent;
+      return true;
+    });
+  }
+
+  if (industryFilter !== "all") {
+    filtered = filtered.filter((item) => (item.industry || "").toLowerCase() === industryFilter);
+  }
 
   if (q) {
-    filtered = filtered.filter(item => matchQuery(item, q));
+    filtered = filtered.filter((item) => matchQuery(item, q));
   }
-  return sortResults(filtered);
+
+  const sorter = (a, b) => {
+    const tsA = a.latest_ts || "";
+    const tsB = b.latest_ts || "";
+    if (sortBy === "date_added") {
+      return tsA < tsB ? 1 : tsA > tsB ? -1 : 0;
+    }
+    // latest_activity default
+    return tsA < tsB ? 1 : tsA > tsB ? -1 : 0;
+  };
+
+  return [...filtered].sort(sorter);
 }
 
 function renderStats(summary) {
@@ -893,55 +854,117 @@ function renderStats(summary) {
     ["Enriched", summary.enriched_contacts],
     ["Drafted", summary.drafted_contacts],
     ["Gmail Drafts", summary.outreach_drafts],
-    ["Sent (45d)", summary.sent_messages_window],
+    ["Sent (All-Time)", summary.sent_messages_window],
     ["Unique Sent", summary.sent_unique_recipients],
   ];
   byId("stats").innerHTML = cards.map(([label, value]) => `
     <div class="stat">
       <div class="label">${esc(label)}</div>
-      <div class="value">${esc(String(value))}</div>
+      <div class="value">${esc(String(value ?? 0))}</div>
     </div>
   `).join("");
 }
 
+function renderStatusChips() {
+  const container = byId("status-chips");
+  if (!container) return;
+  const options = [
+    ["all", "All"],
+    ["not_contacted", "Not Contacted"],
+    ["drafted", "Drafted"],
+    ["sent", "Sent"],
+  ];
+  container.innerHTML = options.map(([key, label]) => {
+    const active = state.statusFilter === key ? "active" : "";
+    return `<button class="chip-btn ${active}" data-value="${key}">${esc(label)}</button>`;
+  }).join("");
+  [...container.querySelectorAll("button")].forEach((btn) => {
+    btn.addEventListener("click", () => {
+      state.statusFilter = btn.dataset.value || "all";
+      renderStatusChips();
+      renderFilteredData();
+    });
+  });
+}
+
+function renderIndustryOptions() {
+  const select = byId("industry-filter");
+  if (!select) return;
+  const options = new Set();
+  (allData.results || []).forEach((item) => {
+    const v = (item.industry || "").trim();
+    if (v) options.add(v);
+  });
+  const sorted = [...options].sort((a, b) => a.localeCompare(b));
+  const current = select.value || "all";
+  select.innerHTML = ['<option value="all">All Industries</option>', ...sorted.map((v) => `<option value="${esc(v)}">${esc(v)}</option>`)].join("");
+  if ([...select.options].some((o) => o.value === current)) {
+    select.value = current;
+  } else {
+    select.value = "all";
+    state.industryFilter = "all";
+  }
+}
+
+function renderSortChips() {
+  const container = byId("sort-chips");
+  if (!container) return;
+  const options = [
+    ["latest_activity", "Latest Activity"],
+    ["date_added", "Date Added"],
+  ];
+  container.innerHTML = options.map(([key, label]) => {
+    const active = state.sortBy === key ? "active" : "";
+    return `<button class="chip-btn ${active}" data-value="${key}">${esc(label)}</button>`;
+  }).join("");
+  [...container.querySelectorAll("button")].forEach((btn) => {
+    btn.addEventListener("click", () => {
+      state.sortBy = btn.dataset.value || "latest_activity";
+      renderSortChips();
+      renderFilteredData();
+    });
+  });
+}
+
+function statusDotClass(item) {
+  if (item.has_sent) return "dot-sent";
+  if (item.has_draft) return "dot-draft";
+  return "dot-none";
+}
+
 function renderResults(items) {
-  const html = items.map(item => {
+  const resultsNode = byId("results");
+  const countNode = byId("results-count");
+  if (countNode) countNode.textContent = `${items.length} result${items.length === 1 ? "" : "s"}`;
+  if (!items.length) {
+    resultsNode.innerHTML = '<div class="meta">No matches</div>';
+    return;
+  }
+  resultsNode.innerHTML = items.map((item) => {
     const active = state.selectedEmail && item.email === state.selectedEmail ? "active" : "";
+    const dot = statusDotClass(item);
     return `
       <div class="row ${active}" data-email="${esc(item.email)}">
         <div class="line">
           <div class="name">${esc(item.name || item.email || "(unknown)")}</div>
           <div class="meta">${esc(fmtTs(item.latest_ts))}</div>
         </div>
-        <div class="meta">${esc(item.company || item.email || "")}</div>
         <div class="line">
-          <div class="meta">${esc(item.subject || item.title || "")}</div>
-          <div class="chips">${rowChips(item)}</div>
+          <div class="meta">${esc(item.company || item.title || item.email || "")}</div>
+          <span class="status-dot ${dot}"></span>
         </div>
+        <div class="meta">${esc(item.industry || "")}</div>
       </div>`;
   }).join("");
-  byId("results").innerHTML = html || '<div class="meta">No matches</div>';
-  [...byId("results").querySelectorAll(".row[data-email]")].forEach(node => {
+
+  [...resultsNode.querySelectorAll(".row[data-email]")].forEach((node) => {
     node.addEventListener("click", () => {
       state.selectedEmail = node.dataset.email || "";
-      [...byId("results").querySelectorAll(".row")].forEach(x => x.classList.remove("active"));
+      [...resultsNode.querySelectorAll(".row")].forEach((x) => x.classList.remove("active"));
       node.classList.add("active");
       loadHistory(state.selectedEmail);
     });
   });
-}
-
-function renderActivity(items) {
-  const html = items.map(item => `
-    <div class="row">
-      <div class="line">
-        <div class="name">${esc(item.title || "")}</div>
-        <div class="meta">${esc(fmtTs(item.ts))}</div>
-      </div>
-      <div class="meta">${esc(item.subtitle || "")}</div>
-    </div>
-  `).join("");
-  byId("activity").innerHTML = html || '<div class="meta">No activity yet</div>';
 }
 
 function showError(message) {
@@ -955,22 +978,102 @@ function showError(message) {
   box.textContent = message;
 }
 
+function renderDetail(payload) {
+  const detailName = byId("detail-name");
+  const detailMeta = byId("detail-meta");
+  const bodyNode = byId("detail-body");
+  if (!bodyNode) return;
+
+  if (payload.contacts_error) {
+    showError(payload.contacts_error);
+  }
+
+  const contact = payload.contact || {};
+  detailName.textContent = contact.name || contact.email || "Contact";
+  detailMeta.textContent = [contact.email, contact.company, contact.title].filter(Boolean).join(" • ");
+
+  const drafts = payload.drafts || [];
+  const sent = payload.sent || [];
+
+  const threads = {};
+  drafts.forEach((d) => {
+    const tid = d.thread_id || `draft-${d.draft_id || d.to_email || "draft"}`;
+    threads[tid] = threads[tid] || [];
+    threads[tid].push({ kind: "draft", data: d });
+  });
+  sent.forEach((s) => {
+    const tid = s.thread_id || "thread";
+    threads[tid] = threads[tid] || [];
+    threads[tid].push({ kind: "sent", data: s });
+  });
+
+  const threadEntries = Object.entries(threads).map(([tid, msgs]) => {
+    const sorted = msgs.sort((a, b) => {
+      const ta = a.data.sent_at || a.data.date_header || a.data.drafted_at || "";
+      const tb = b.data.sent_at || b.data.date_header || b.data.drafted_at || "";
+      return ta < tb ? -1 : ta > tb ? 1 : 0;
+    });
+    const latest = sorted[sorted.length - 1].data.sent_at || sorted[sorted.length - 1].data.date_header || sorted[sorted.length - 1].data.drafted_at || "";
+    return { tid, msgs: sorted, latest };
+  }).sort((a, b) => (a.latest < b.latest ? 1 : a.latest > b.latest ? -1 : 0));
+
+  if (!threadEntries.length) {
+    bodyNode.innerHTML = '<div class="meta">No drafts or sent history yet.</div>';
+    return;
+  }
+
+  bodyNode.innerHTML = threadEntries.map(({ tid, msgs }) => {
+    const messagesHtml = msgs.map((entry) => {
+      const d = entry.data;
+      const ts = fmtTs(d.sent_at || d.date_header || d.drafted_at || "");
+      const subject = d.subject || "(no subject)";
+      const direction = d.direction || (entry.kind === "draft" ? "draft" : "sent");
+      const badgeClass = direction === "received" ? "recv" : (entry.kind === "draft" ? "draft" : "sent");
+      const body = d.body_text || d.snippet || "";
+      return `
+        <div class="msg">
+          <div class="line">
+            <div>${esc(subject)}</div>
+            <div class="ts">${esc(ts)}</div>
+          </div>
+          <div class="line" style="gap:6px;">
+            <span class="badge ${badgeClass}">${esc(direction)}</span>
+            <span class="meta">${esc(d.from || "")} → ${esc(d.to || d.to_email || "")}</span>
+          </div>
+          <div class="meta">${esc(d.snippet || "")}</div>
+          <details>
+            <summary class="meta">Body</summary>
+            <pre>${esc(body)}</pre>
+          </details>
+        </div>`;
+    }).join("");
+    return `
+      <div class="msg" style="border-color:#3b4a62;">
+        <div class="line">
+          <div class="name">Thread ${esc(tid)}</div>
+          <div class="meta">${esc(msgs.length)} item${msgs.length === 1 ? "" : "s"}</div>
+        </div>
+        <div class="detail-body-group">${messagesHtml}</div>
+      </div>`;
+  }).join("");
+}
+
 function renderFilteredData({ allowHistory = true } = {}) {
   const filtered = getFilteredResults();
   renderResults(filtered);
 
   if (!filtered.length) {
     state.selectedEmail = "";
+    byId("detail-body").innerHTML = '<div class="meta">No results. Adjust your filters.</div>';
+    return;
   }
-  if ((!state.selectedEmail || !filtered.some(x => x.email === state.selectedEmail)) && filtered.length) {
+
+  if ((!state.selectedEmail) || !filtered.some((x) => x.email === state.selectedEmail)) {
     state.selectedEmail = filtered[0].email || "";
   }
 
   if (state.selectedEmail && allowHistory) {
     loadHistory(state.selectedEmail);
-  } else if (!state.selectedEmail) {
-    byId("detail").innerHTML = '<div class="meta">Select a contact to inspect drafts and sent history.</div>';
-    byId("detailMeta").textContent = "";
   }
 }
 
@@ -991,7 +1094,9 @@ function renderPayload(payload, { allowHistory = true } = {}) {
   };
 
   renderStats(allData.summary || {});
-  renderActivity(allData.activity || []);
+  renderIndustryOptions();
+  renderStatusChips();
+  renderSortChips();
 
   const warn = byId("sentWarn");
   const warnParts = [];
@@ -1013,8 +1118,6 @@ async function loadData({ withGmail = false } = {}) {
   state._lastReqId = reqId;
   showError("");
   byId("results").innerHTML = '<div class="meta">Loading contacts...</div>';
-  byId("activity").innerHTML = '<div class="meta">Loading activity...</div>';
-
   try {
     const fastPayload = await fetchPayload(true);
     if (state._lastReqId !== reqId) return;
@@ -1045,79 +1148,16 @@ async function loadHistory(email) {
     const res = await fetch(`/api/history?${qs.toString()}`);
     if (!res.ok) throw new Error(`History API error (${res.status})`);
     const payload = await res.json();
-    const contact = payload.contact || {};
-    const drafts = payload.drafts || [];
-    const sent = payload.sent || [];
-
-    byId("detailMeta").textContent = contact.email || email;
-    let html = `
-      <div>
-        <h3>${esc(contact.name || email)}</h3>
-        <div class="subtitle">${esc([contact.company, contact.title].filter(Boolean).join(" • "))}</div>
-        <div class="meta">${esc([contact.city, contact.state, contact.industry].filter(Boolean).join(" • "))}</div>
-      </div>
-    `;
-
-    if (payload.contacts_error) {
-      html += `<div class="warn" style="display:block">${esc(payload.contacts_error)}</div>`;
-    }
-    if (payload.sent_access_error) {
-      html += `<div class="warn" style="display:block">${esc(payload.sent_access_error)}</div>`;
-    }
-
-    html += '<div><strong>Drafts</strong><div class="timeline">';
-    html += drafts.map(d => `
-      <div class="event">
-        <div class="line"><div>${esc(d.subject || "(no subject)")}</div><div class="ts">${esc(d.draft_id || "")}</div></div>
-        <div class="sub">${esc(d.to_email || "")}</div>
-        <div class="pre">${esc((d.body_text || "").slice(0, 900))}</div>
-      </div>
-    `).join("") || '<div class="meta">No drafts found for this contact.</div>';
-    html += '</div></div>';
-
-    html += '<div><strong>Thread (You + Contact)</strong><div class="timeline">';
-    html += sent.map(s => `
-      <div class="event">
-        <div class="line"><div>${esc(s.subject || "(no subject)")}</div><div class="ts">${esc(fmtTs(s.sent_at || s.date_header || ""))}</div></div>
-        <div class="line"><div class="chip ${s.direction === "received" ? "ok" : "warn"}">${esc(s.direction || "message")}</div><div class="meta">${esc(s.thread_id || "")}</div></div>
-        <div class="sub">From: ${esc(s.from || "")}</div>
-        <div class="sub">To: ${esc(s.to || "")}</div>
-        <div class="sub">${esc(s.snippet || "")}</div>
-        <div class="pre">${esc((s.body_text || "").slice(0, 1200))}</div>
-      </div>
-    `).join("") || '<div class="meta">No thread messages found for this contact in the current lookup window.</div>';
-    html += '</div></div>';
-
-    byId("detail").innerHTML = html;
+    renderDetail(payload);
   } catch (err) {
     const msg = (err && err.message) ? err.message : "Failed to load contact history.";
-    byId("detail").innerHTML = `<div class="meta">${esc(msg)}</div>`;
+    byId("detail-body").innerHTML = `<div class="meta">${esc(msg)}</div>`;
   }
 }
 
-const railButtons = [...document.querySelectorAll(".rail button[title]")];
-const titleToView = { overview: "all", apollo: "apollo", drafts: "drafts", sent: "sent" };
-
-function syncRailActive() {
-  railButtons.forEach(btn => {
-    const title = (btn.getAttribute("title") || "").toLowerCase();
-    const mapped = titleToView[title] || "all";
-    btn.classList.toggle("active", mapped === state.view);
-  });
-}
-
-railButtons.forEach(btn => {
-  btn.addEventListener("click", () => {
-    const title = (btn.getAttribute("title") || "").toLowerCase();
-    const view = titleToView[title] || "all";
-    const tab = document.querySelector(`.tab[data-view="${view}"]`);
-    if (tab) tab.click();
-  });
-});
-
 const onSearch = debounce((value) => {
   state.q = (value || "").trim();
-  renderFilteredData({ allowHistory: false });
+  renderFilteredData();
 }, 300);
 
 byId("search").addEventListener("input", (e) => onSearch(e.target.value || ""));
@@ -1139,22 +1179,24 @@ byId("refresh").addEventListener("click", async (e) => {
 byId("clear").addEventListener("click", () => {
   state.q = "";
   state.selectedEmail = "";
+  state.industryFilter = "all";
+  state.statusFilter = "all";
+  state.sortBy = "latest_activity";
   byId("search").value = "";
-  renderFilteredData({ allowHistory: false });
+  const ind = byId("industry-filter");
+  if (ind) ind.value = "all";
+  renderStatusChips();
+  renderSortChips();
+  renderFilteredData();
 });
 
-[...document.querySelectorAll(".tab")].forEach(node => {
-  node.addEventListener("click", () => {
-    [...document.querySelectorAll(".tab")].forEach(x => x.classList.remove("active"));
-    node.classList.add("active");
-    state.view = node.dataset.view || "all";
-    state.selectedEmail = "";
-    syncRailActive();
-    renderFilteredData({ allowHistory: false });
-  });
+byId("industry-filter").addEventListener("change", (e) => {
+  state.industryFilter = (e.target.value || "all");
+  renderFilteredData();
 });
 
-syncRailActive();
+renderStatusChips();
+renderSortChips();
 loadData({ withGmail: false });
 """
 

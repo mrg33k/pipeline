@@ -261,15 +261,29 @@ def get_outreach_drafts(max_results: int = 200, known_emails: set = None) -> lis
     service = _get_gmail_service()
 
     try:
-        result = service.users().drafts().list(userId="me", maxResults=max_results).execute()
-        draft_stubs = result.get("drafts", [])
+        draft_stubs = []
+        page_token = None
+        fetched = 0
+        while fetched < max_results:
+            remaining = max_results - fetched
+            result = service.users().drafts().list(
+                userId="me",
+                maxResults=min(200, remaining),
+                pageToken=page_token,
+            ).execute()
+            page_stubs = result.get("drafts", []) or []
+            draft_stubs.extend(page_stubs)
+            fetched += len(page_stubs)
+            page_token = result.get("nextPageToken")
+            if not page_stubs or not page_token:
+                break
     except Exception as e:
         logger.error(f"Failed to list drafts: {e}")
         return []
 
     use_email_matching = len(known_emails) > 0
     logger.info(
-        f"Found {len(draft_stubs)} total drafts in Gmail. "
+        f"Found {len(draft_stubs)} total drafts in Gmail (paginated). "
         f"Detection mode: {'email-match against {len(known_emails)} known contacts' if use_email_matching else 'body-content fallback'}"
     )
 
@@ -811,14 +825,27 @@ def get_recent_sent_activity(
     days = _hours_to_newer_than_days(hours)
     query = f"in:sent newer_than:{days}d"
 
+    cutoff_ms = int((time.time() - (hours * 3600)) * 1000)
+
     try:
-        result = service.users().messages().list(
-            userId="me",
-            labelIds=["SENT"],
-            q=query,
-            maxResults=max_results,
-        ).execute()
-        stubs = result.get("messages", []) or []
+        stubs = []
+        page_token = None
+        fetched = 0
+        while fetched < max_results:
+            remaining = max_results - fetched
+            result = service.users().messages().list(
+                userId="me",
+                labelIds=["SENT"],
+                q=query,
+                maxResults=min(200, remaining),
+                pageToken=page_token,
+            ).execute()
+            page = result.get("messages", []) or []
+            stubs.extend(page)
+            fetched += len(page)
+            page_token = result.get("nextPageToken")
+            if not page or not page_token:
+                break
     except Exception as e:
         logger.warning(f"Could not fetch sent activity: {e}")
         return []
@@ -843,6 +870,8 @@ def get_recent_sent_activity(
         date_raw = _header_value(headers, "Date")
         snippet = msg.get("snippet", "") or ""
         internal_ms = int(msg.get("internalDate", "0") or "0")
+        if internal_ms and internal_ms < cutoff_ms:
+            continue
         sent_at = (
             datetime.fromtimestamp(internal_ms / 1000).isoformat()
             if internal_ms
