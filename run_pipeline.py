@@ -37,7 +37,6 @@ import research
 import email_writer
 import gmail_drafter
 import csv_export
-from dashboard_ui import launch_outreach_dashboard
 from preflight_ui import PreflightSettings, collect_preflight_settings
 
 
@@ -1035,6 +1034,7 @@ Examples:
         banner("DASHBOARD")
         print("Database status:")
         print_db_stats(db)
+        from dashboard_ui import launch_outreach_dashboard
         launch_outreach_dashboard(db)
         return
 

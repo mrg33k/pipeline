@@ -170,13 +170,43 @@ class _DashboardState:
 
         def _load():
             try:
-                if not known_emails:
-                    return []
-                return gmail_drafter.get_recent_sent_activity(
+                activity = gmail_drafter.get_recent_sent_activity(
                     hours=24 * 45,
                     max_results=120,
-                    allowed_recipients=known_emails,
+                    allowed_recipients=known_emails or None,
                 )
+                accounted = {
+                    (item.get("to_email") or "").strip().lower()
+                    for item in activity
+                    if (item.get("to_email") or "").strip()
+                }
+                recent_db_emails = self.db.get_recent_contact_emails(hours=24 * 45)
+                db_contacts = (self.db.data or {}).get("contacts", {}) or {}
+                latest_by_email: dict[str, str] = {}
+                for info in db_contacts.values():
+                    email = (info.get("email") or "").strip().lower()
+                    if not email or email not in recent_db_emails:
+                        continue
+                    ts = _latest_contact_ts(info)
+                    if ts:
+                        current = latest_by_email.get(email, "")
+                        if not current or _parse_iso(ts) > _parse_iso(current):
+                            latest_by_email[email] = ts
+
+                for email in sorted(recent_db_emails):
+                    if email in accounted:
+                        continue
+                    activity.append({
+                        "message_id": f"local:{email}",
+                        "to_email": email,
+                        "to_raw": email,
+                        "subject": "(from local contact log)",
+                        "date_header": "",
+                        "sent_at": latest_by_email.get(email, ""),
+                        "snippet": "",
+                        "source": "local_db",
+                    })
+                return activity
             except Exception:
                 return []
 
@@ -191,11 +221,9 @@ class _DashboardState:
         if not can_read_sent:
             return [], sent_error
 
-        known_emails, contacts_error = self.apollo_email_set()
+        _, contacts_error = self.apollo_email_set()
         if contacts_error:
             return [], contacts_error
-        if known_emails and target not in known_emails:
-            return [], "Selected email is not currently in Apollo-owned contacts."
 
         def _load():
             try:
@@ -267,7 +295,7 @@ def _build_activity_feed(db_runs: list[dict], contacts: list[dict], sent_activit
     return feed[:120]
 
 
-def _build_dashboard_payload(state: _DashboardState, q: str, view: str, fast: bool = False) -> dict:
+def _build_dashboard_payload(state: _DashboardState, fast: bool = False) -> dict:
     contacts, contacts_error = state.contacts()
     if fast:
         drafts = []
@@ -300,72 +328,55 @@ def _build_dashboard_payload(state: _DashboardState, q: str, view: str, fast: bo
         if (item.get("email") or "").strip()
     }
     results: list[dict] = []
-    q = (q or "").strip()
-    view = (view or "all").strip().lower()
-    if view not in {"all", "apollo", "drafts", "sent"}:
-        view = "all"
 
-    if view in {"all", "apollo"}:
-        for contact in contacts:
-            email = contact.get("email", "")
-            item = {
-                "type": "contact",
-                "id": contact.get("id", ""),
-                "name": contact.get("name", ""),
-                "email": email,
-                "company": contact.get("company", ""),
-                "title": contact.get("title", ""),
-                "industry": contact.get("industry", ""),
-                "subject": contact.get("subject", ""),
-                "latest_ts": contact.get("latest_ts", ""),
-                "has_draft": email in drafts_by_email,
-                "has_sent": email in sent_by_email,
-            }
-            if _match_query(item, q):
-                results.append(item)
+    for contact in contacts:
+        email = contact.get("email", "")
+        results.append({
+            "type": "contact",
+            "id": contact.get("id", ""),
+            "name": contact.get("name", ""),
+            "email": email,
+            "company": contact.get("company", ""),
+            "title": contact.get("title", ""),
+            "industry": contact.get("industry", ""),
+            "subject": contact.get("subject", ""),
+            "latest_ts": contact.get("latest_ts", ""),
+            "has_draft": email in drafts_by_email,
+            "has_sent": email in sent_by_email,
+        })
 
-    if view in {"all", "drafts"}:
-        for draft in drafts:
-            email = draft.get("to_email", "")
-            if view == "all" and email in contact_emails:
-                continue
-            contact = contacts_by_email.get(email, {})
-            item = {
-                "type": "draft",
-                "id": draft.get("draft_id", ""),
-                "name": contact.get("name", "") or draft.get("to_name", "") or draft.get("first_name", "") or email,
-                "email": email,
-                "company": contact.get("company", "") or draft.get("company", ""),
-                "title": contact.get("title", ""),
-                "industry": contact.get("industry", ""),
-                "subject": draft.get("subject", ""),
-                "latest_ts": "",
-                "has_draft": True,
-                "has_sent": email in sent_by_email,
-            }
-            if _match_query(item, q):
-                results.append(item)
+    for draft in drafts:
+        email = draft.get("to_email", "")
+        contact = contacts_by_email.get(email, {})
+        results.append({
+            "type": "draft",
+            "id": draft.get("draft_id", ""),
+            "name": contact.get("name", "") or draft.get("to_name", "") or draft.get("first_name", "") or email,
+            "email": email,
+            "company": contact.get("company", "") or draft.get("company", ""),
+            "title": contact.get("title", ""),
+            "industry": contact.get("industry", ""),
+            "subject": draft.get("subject", ""),
+            "latest_ts": "",
+            "has_draft": True,
+            "has_sent": email in sent_by_email,
+        })
 
-    if view in {"all", "sent"}:
-        for email, sent in sent_by_email.items():
-            if view == "all" and email in contact_emails:
-                continue
-            contact = contacts_by_email.get(email, {})
-            item = {
-                "type": "sent",
-                "id": sent.get("message_id", ""),
-                "name": contact.get("name", "") or sent.get("to_raw", "") or email,
-                "email": email,
-                "company": contact.get("company", ""),
-                "title": contact.get("title", ""),
-                "industry": contact.get("industry", ""),
-                "subject": sent.get("subject", ""),
-                "latest_ts": sent.get("sent_at", ""),
-                "has_draft": email in drafts_by_email,
-                "has_sent": True,
-            }
-            if _match_query(item, q):
-                results.append(item)
+    for email, sent in sent_by_email.items():
+        contact = contacts_by_email.get(email, {})
+        results.append({
+            "type": "sent",
+            "id": sent.get("message_id", ""),
+            "name": contact.get("name", "") or sent.get("to_raw", "") or email,
+            "email": email,
+            "company": contact.get("company", ""),
+            "title": contact.get("title", ""),
+            "industry": contact.get("industry", ""),
+            "subject": sent.get("subject", ""),
+            "latest_ts": sent.get("sent_at", ""),
+            "has_draft": email in drafts_by_email,
+            "has_sent": True,
+        })
 
     results.sort(
         key=lambda item: (
@@ -377,8 +388,6 @@ def _build_dashboard_payload(state: _DashboardState, q: str, view: str, fast: bo
 
     runs = ((state.db.data or {}).get("runs", []) or [])
     activity = _build_activity_feed(runs, contacts, sent_activity)
-    if q:
-        activity = [item for item in activity if _match_query(item, q)]
 
     summary = {
         "apollo_contacts": len(contacts),
@@ -387,6 +396,7 @@ def _build_dashboard_payload(state: _DashboardState, q: str, view: str, fast: bo
         "outreach_drafts": len(drafts),
         "sent_messages_window": len(sent_activity),
         "sent_unique_recipients": len(sent_by_email),
+        "apollo_contact_emails": len(contact_emails),
     }
 
     return {
@@ -513,7 +523,6 @@ def _dashboard_page() -> str:
       box-shadow: 0 18px 65px rgba(0,0,0,.45);
       display: grid;
       grid-template-columns: 82px 1fr;
-      overflow: hidden;
     }
     .rail {
       background: rgba(5,8,12,.85);
@@ -555,7 +564,7 @@ def _dashboard_page() -> str:
     .main {
       padding: 14px 16px 16px;
       display: grid;
-      grid-template-rows: auto auto 1fr;
+      grid-template-rows: auto auto auto 1fr auto;
       gap: 12px;
     }
     .topbar {
@@ -617,7 +626,7 @@ def _dashboard_page() -> str:
     .panes {
       min-height: 0;
       display: grid;
-      grid-template-columns: 1.05fr 1fr;
+      grid-template-columns: minmax(380px, 1.05fr) minmax(380px, 1fr);
       gap: 12px;
     }
     .card {
@@ -784,6 +793,13 @@ def _dashboard_page() -> str:
 def _dashboard_script() -> str:
     return """
 const state = { q: "", view: "all", selectedEmail: "" };
+let allData = {
+  summary: {},
+  results: [],
+  activity: [],
+  sent_access_error: "",
+  contacts_error: "",
+};
 
 const byId = id => document.getElementById(id);
 const esc = (v) => (v || "").replace(/[&<>"']/g, ch => ({
@@ -793,6 +809,14 @@ const esc = (v) => (v || "").replace(/[&<>"']/g, ch => ({
   '"': "&quot;",
   "'": "&#39;"
 }[ch]));
+
+function debounce(fn, delayMs) {
+  let timer = null;
+  return (...args) => {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => fn(...args), delayMs);
+  };
+}
 
 function fmtTs(ts) {
   if (!ts) return "";
@@ -807,6 +831,60 @@ function rowChips(item) {
   if (item.has_draft) chips.push('<span class="chip warn">draft</span>');
   if (item.has_sent) chips.push('<span class="chip ok">sent</span>');
   return chips.join("");
+}
+
+function matchQuery(item, q) {
+  if (!q) return true;
+  const haystack = [
+    item.name,
+    item.email,
+    item.company,
+    item.title,
+    item.industry,
+    item.subject,
+    item.snippet,
+    item.to_email,
+    item.to_raw,
+  ].join(" ").toLowerCase();
+  return q.split(/\\s+/).filter(Boolean).every(part => haystack.includes(part));
+}
+
+function sortResults(items) {
+  return [...items].sort((a, b) => {
+    const sentA = a.has_sent ? 1 : 0;
+    const sentB = b.has_sent ? 1 : 0;
+    if (sentA !== sentB) return sentB - sentA;
+    const tsA = a.latest_ts || "";
+    const tsB = b.latest_ts || "";
+    return tsA < tsB ? 1 : (tsA > tsB ? -1 : 0);
+  });
+}
+
+function getFilteredResults() {
+  const items = Array.isArray(allData.results) ? allData.results : [];
+  const view = state.view || "all";
+  const q = (state.q || "").trim().toLowerCase();
+  const contactEmails = new Set(
+    items
+      .filter(x => (x.type || "contact") === "contact")
+      .map(x => (x.email || "").toLowerCase())
+      .filter(Boolean)
+  );
+
+  let filtered = items.filter(item => {
+    const type = item.type || "contact";
+    if (view === "apollo") return type === "contact";
+    if (view === "drafts") return type === "draft";
+    if (view === "sent") return type === "sent";
+    if (type === "contact") return true;
+    const email = (item.email || "").toLowerCase();
+    return !email || !contactEmails.has(email);
+  });
+
+  if (q) {
+    filtered = filtered.filter(item => matchQuery(item, q));
+  }
+  return sortResults(filtered);
 }
 
 function renderStats(summary) {
@@ -877,22 +955,48 @@ function showError(message) {
   box.textContent = message;
 }
 
+function renderFilteredData({ allowHistory = true } = {}) {
+  const filtered = getFilteredResults();
+  renderResults(filtered);
+
+  if (!filtered.length) {
+    state.selectedEmail = "";
+  }
+  if ((!state.selectedEmail || !filtered.some(x => x.email === state.selectedEmail)) && filtered.length) {
+    state.selectedEmail = filtered[0].email || "";
+  }
+
+  if (state.selectedEmail && allowHistory) {
+    loadHistory(state.selectedEmail);
+  } else if (!state.selectedEmail) {
+    byId("detail").innerHTML = '<div class="meta">Select a contact to inspect drafts and sent history.</div>';
+    byId("detailMeta").textContent = "";
+  }
+}
+
 async function fetchPayload(fast) {
-  const qs = new URLSearchParams({ q: state.q, view: state.view, fast: fast ? "1" : "0" });
+  const qs = new URLSearchParams({ fast: fast ? "1" : "0" });
   const res = await fetch(`/api/data?${qs.toString()}`);
   if (!res.ok) throw new Error(`Dashboard API error (${res.status})`);
   return res.json();
 }
 
 function renderPayload(payload, { allowHistory = true } = {}) {
-  renderStats(payload.summary || {});
-  renderResults(payload.results || []);
-  renderActivity(payload.activity || []);
+  allData = {
+    summary: payload.summary || {},
+    results: payload.results || [],
+    activity: payload.activity || [],
+    sent_access_error: payload.sent_access_error || "",
+    contacts_error: payload.contacts_error || "",
+  };
+
+  renderStats(allData.summary || {});
+  renderActivity(allData.activity || []);
 
   const warn = byId("sentWarn");
   const warnParts = [];
-  if (payload.contacts_error) warnParts.push(payload.contacts_error);
-  if (payload.sent_access_error) warnParts.push(payload.sent_access_error);
+  if (allData.contacts_error) warnParts.push(allData.contacts_error);
+  if (allData.sent_access_error) warnParts.push(allData.sent_access_error);
   if (warnParts.length) {
     warn.style.display = "block";
     warn.textContent = warnParts.join(" | ");
@@ -901,15 +1005,7 @@ function renderPayload(payload, { allowHistory = true } = {}) {
     warn.textContent = "";
   }
 
-  if ((!state.selectedEmail || !(payload.results || []).some(x => x.email === state.selectedEmail)) && (payload.results || []).length) {
-    state.selectedEmail = payload.results[0].email || "";
-  }
-  if (state.selectedEmail && allowHistory) {
-    loadHistory(state.selectedEmail);
-  } else if (!state.selectedEmail) {
-    byId("detail").innerHTML = '<div class="meta">Select a contact to inspect drafts and sent history.</div>';
-    byId("detailMeta").textContent = "";
-  }
+  renderFilteredData({ allowHistory });
 }
 
 async function loadData({ withGmail = false } = {}) {
@@ -938,9 +1034,7 @@ async function loadData({ withGmail = false } = {}) {
   } catch (err) {
     const msg = (err && err.message) ? err.message : "Failed to load Gmail-backed activity.";
     showError(msg);
-    if (state.selectedEmail) {
-      loadHistory(state.selectedEmail);
-    }
+    if (state.selectedEmail) loadHistory(state.selectedEmail);
   }
 }
 
@@ -1001,29 +1095,66 @@ async function loadHistory(email) {
   }
 }
 
-byId("search").addEventListener("input", (e) => {
-  state.q = (e.target.value || "").trim();
-  loadData({ withGmail: false });
+const railButtons = [...document.querySelectorAll(".rail button[title]")];
+const titleToView = { overview: "all", apollo: "apollo", drafts: "drafts", sent: "sent" };
+
+function syncRailActive() {
+  railButtons.forEach(btn => {
+    const title = (btn.getAttribute("title") || "").toLowerCase();
+    const mapped = titleToView[title] || "all";
+    btn.classList.toggle("active", mapped === state.view);
+  });
+}
+
+railButtons.forEach(btn => {
+  btn.addEventListener("click", () => {
+    const title = (btn.getAttribute("title") || "").toLowerCase();
+    const view = titleToView[title] || "all";
+    const tab = document.querySelector(`.tab[data-view="${view}"]`);
+    if (tab) tab.click();
+  });
 });
-byId("refresh").addEventListener("click", async () => {
-  await fetch("/api/refresh", { method: "POST" });
-  loadData({ withGmail: true });
+
+const onSearch = debounce((value) => {
+  state.q = (value || "").trim();
+  renderFilteredData({ allowHistory: false });
+}, 300);
+
+byId("search").addEventListener("input", (e) => onSearch(e.target.value || ""));
+
+byId("refresh").addEventListener("click", async (e) => {
+  const button = e.currentTarget;
+  const original = button.textContent || "Sync Gmail";
+  button.disabled = true;
+  button.textContent = "Syncing...";
+  try {
+    await fetch("/api/refresh", { method: "POST" });
+    await loadData({ withGmail: true });
+  } finally {
+    button.disabled = false;
+    button.textContent = original || "Sync Gmail";
+  }
 });
+
 byId("clear").addEventListener("click", () => {
   state.q = "";
   state.selectedEmail = "";
   byId("search").value = "";
-  loadData({ withGmail: false });
+  renderFilteredData({ allowHistory: false });
 });
+
 [...document.querySelectorAll(".tab")].forEach(node => {
   node.addEventListener("click", () => {
     [...document.querySelectorAll(".tab")].forEach(x => x.classList.remove("active"));
     node.classList.add("active");
     state.view = node.dataset.view || "all";
     state.selectedEmail = "";
-    loadData({ withGmail: false });
+    syncRailActive();
+    renderFilteredData({ allowHistory: false });
   });
 });
+
+syncRailActive();
 loadData({ withGmail: false });
 """
 
@@ -1070,10 +1201,8 @@ def launch_outreach_dashboard(db) -> None:
                     return
                 if parsed.path == "/api/data":
                     qs = parse_qs(parsed.query)
-                    q = (qs.get("q", [""])[0] or "").strip()
-                    view = (qs.get("view", ["all"])[0] or "all").strip().lower()
                     fast = (qs.get("fast", ["0"])[0] or "0").strip() in {"1", "true", "yes"}
-                    payload = _build_dashboard_payload(state, q=q, view=view, fast=fast)
+                    payload = _build_dashboard_payload(state, fast=fast)
                     self._json(payload)
                     return
                 if parsed.path == "/api/history":
