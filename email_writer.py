@@ -100,11 +100,6 @@ I didn't want to assume anything, so I thought I'd introduce myself first. I'm a
 Best,"""
 
 IDEA_TEASES = {
-    "construction": [
-        "I had an idea for showing off some of your project work.",
-        "I had a thought about helping you guys stand out when you're bidding on jobs.",
-        "I had an idea around helping your crew's work get the attention it deserves.",
-    ],
     "restaurant": [
         "I had an idea around keeping your social and menu content looking sharp.",
         "I had a thought about getting your food looking as good online as it does in person.",
@@ -132,6 +127,8 @@ IDEA_TEASES = {
     ],
     "trades": [
         "I had an idea for showing off some of your project work.",
+        "I had a thought about helping you guys stand out when you're bidding on jobs.",
+        "I had an idea around helping your crew's work get the attention it deserves.",
         "I had a thought about helping you guys recruit better crews.",
         "I had an idea around making your work speak for itself online.",
     ],
