@@ -24,9 +24,9 @@ EMAIL FORMULA — each item gets its own paragraph with a blank line between the
 1. "Hi [First name]," — ALWAYS include the first name. Never "Hi," alone. If no name available, use "Hi there,".
 
 2. THE OPENER: One short casual sentence acknowledging what they do. Keep the industry description to 1-3 words. Do not elaborate. Do not compliment. Do not describe their full business. Examples:
-   - "I know you guys do concrete work."
+   - "I can see you guys do concrete work."
    - "I've eaten at [restaurant name] a few times."
-   - "I know you guys work in the pool service space."
+   - "I can see you guys work in the pool service space."
    - "I've seen your studio around town."
    - If no company fact is provided, use: "I came across you guys recently." or "Your name came up recently."
    RULES: NEVER invent details not in the verified fact. NEVER mention their website. NEVER use more than one sentence. NEVER use adjectives like "great", "amazing", "impressive".
@@ -69,7 +69,7 @@ EXAMPLES (match this tone, structure, and formatting exactly):
 Example 1:
 Hi Paul,
 
-I know you guys do concrete work.
+I can see you guys do concrete work.
 
 I had an idea for showing off some of your project work.
 
@@ -91,7 +91,7 @@ Best,
 Example 3:
 Hi Priya,
 
-I know you guys work in the software space.
+I can see you guys work in the software space.
 
 I had a thought about making what you guys built easier to understand at a glance.
 
@@ -173,6 +173,7 @@ def write_email(profile: dict, opener_hint: str = "") -> dict:
     )
 
     body = response.choices[0].message.content.strip()
+    body = _normalize_opener_phrase(body)
     body = _normalize_trade_opener(body, profile)
 
     subject = _build_subject(profile)
@@ -368,7 +369,7 @@ def _is_trade_fact(company_fact: str) -> bool:
 def _normalize_trade_opener(body: str, profile: dict) -> str:
     """
     For trade contexts, normalize opener phrase:
-    "I know you guys do X work around here." -> "I know you guys do a lot of X work around here."
+    "I can see you guys do X work around here." -> "I can see you guys do a lot of X work around here."
     """
     company_fact = (profile.get("company_fact") or "").strip()
     if not _is_trade_fact(company_fact):
@@ -387,11 +388,39 @@ def _normalize_trade_opener(body: str, profile: dict) -> str:
         return body
 
     opener = lines[opener_idx].strip()
-    pattern = re.compile(r"^(I know you guys do)\s+(?!a lot of\b)(.+)$", re.IGNORECASE)
+    pattern = re.compile(r"^(I (?:know|can see) you guys do)\s+(.+)$", re.IGNORECASE)
     match = pattern.match(opener)
     if not match:
         return body
 
-    new_opener = f"{match.group(1)} a lot of {match.group(2)}"
+    rest = match.group(2)
+    if re.match(r"^a lot of\b", rest, re.IGNORECASE):
+        new_opener = f"I can see you guys do {rest}"
+    else:
+        new_opener = f"I can see you guys do a lot of {rest}"
     lines[opener_idx] = new_opener
+    return "\n".join(lines)
+
+
+def _normalize_opener_phrase(body: str) -> str:
+    """
+    Normalize opener wording:
+    "I know you guys do/work ..." -> "I can see you guys do/work ..."
+    """
+    lines = body.split("\n")
+    opener_idx = None
+    for idx, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.lower().startswith("hi "):
+            continue
+        if stripped:
+            opener_idx = idx
+            break
+    if opener_idx is None:
+        return body
+
+    opener = lines[opener_idx].strip()
+    opener = re.sub(r"^I know you guys do\b", "I can see you guys do", opener, flags=re.IGNORECASE)
+    opener = re.sub(r"^I know you guys work\b", "I can see you guys work", opener, flags=re.IGNORECASE)
+    lines[opener_idx] = opener
     return "\n".join(lines)

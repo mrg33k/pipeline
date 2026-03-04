@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import json
 import threading
 import webbrowser
 from dataclasses import dataclass
@@ -20,6 +21,7 @@ class PreflightSettings:
     subject_template: str
     subject_company_mode: str
     email_system_prompt: str
+    idea_teases_json: str
 
 
 class _State:
@@ -32,6 +34,26 @@ class _State:
 
 def _to_bool(value: str) -> bool:
     return value in {"1", "true", "on", "yes"}
+
+
+def _validate_idea_teases_json(raw: str) -> None:
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"idea_teases_json must be valid JSON: {exc.msg}") from exc
+
+    if not isinstance(parsed, dict):
+        raise ValueError("idea_teases_json must be a JSON object")
+    if "default" not in parsed:
+        raise ValueError('idea_teases_json must include a "default" key')
+
+    for key, value in parsed.items():
+        if not isinstance(key, str) or not key.strip():
+            raise ValueError("idea_teases_json keys must be non-empty strings")
+        if not isinstance(value, list) or not value:
+            raise ValueError(f'idea_teases_json["{key}"] must be a non-empty list')
+        if not all(isinstance(item, str) and item.strip() for item in value):
+            raise ValueError(f'idea_teases_json["{key}"] items must be non-empty strings')
 
 
 def _parse_form(defaults: PreflightSettings, body: bytes) -> PreflightSettings:
@@ -63,6 +85,10 @@ def _parse_form(defaults: PreflightSettings, body: bytes) -> PreflightSettings:
     subject_company_mode = (values.get("subject_company_mode", [defaults.subject_company_mode])[0] or "").strip().lower()
     if subject_company_mode not in {"full", "first_token"}:
         raise ValueError("subject_company_mode must be one of: full, first_token")
+    idea_teases_json = values.get("idea_teases_json", [defaults.idea_teases_json])[0].strip()
+    if not idea_teases_json:
+        raise ValueError("idea_teases_json cannot be empty")
+    _validate_idea_teases_json(idea_teases_json)
 
     return PreflightSettings(
         mode=mode,
@@ -74,6 +100,7 @@ def _parse_form(defaults: PreflightSettings, body: bytes) -> PreflightSettings:
         subject_template=subject_template,
         subject_company_mode=subject_company_mode,
         email_system_prompt=prompt,
+        idea_teases_json=idea_teases_json,
     )
 
 
@@ -223,6 +250,28 @@ def _render_page(defaults: PreflightSettings, error: str = "") -> str:
       border-radius: 6px;
       padding: 8px 10px;
     }}
+    details.advanced {{
+      margin-top: 10px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: rgba(8,12,18,0.45);
+      padding: 8px 10px;
+    }}
+    details.advanced > summary {{
+      cursor: pointer;
+      color: #c7d4e6;
+      font-weight: 600;
+      list-style: none;
+    }}
+    details.advanced > summary::-webkit-details-marker {{
+      display: none;
+    }}
+    textarea.prompt {{
+      min-height: 280px;
+    }}
+    textarea.teases {{
+      min-height: 220px;
+    }}
     @media (max-width: 900px) {{
       .grid {{ grid-template-columns: 1fr; }}
       textarea {{ min-height: 240px; }}
@@ -280,9 +329,19 @@ def _render_page(defaults: PreflightSettings, error: str = "") -> str:
         </div>
 
         <div class="pane">
-          <div class="pane-title">Email Prompt</div>
-          <label for="email_system_prompt">System prompt (applies this run)</label>
-          <textarea id="email_system_prompt" name="email_system_prompt" required>{html.escape(defaults.email_system_prompt)}</textarea>
+          <div class="pane-title">Templates</div>
+          <div class="hint">Adjust template structures for this run without editing code.</div>
+
+          <details class="advanced" open>
+            <summary>Advanced settings</summary>
+            <label for="email_system_prompt">Email system prompt template</label>
+            <textarea class="prompt" id="email_system_prompt" name="email_system_prompt" required>{html.escape(defaults.email_system_prompt)}</textarea>
+            <div class="hint">Full body-template rules for generated emails.</div>
+
+            <label for="idea_teases_json">Idea tease templates (JSON)</label>
+            <textarea class="teases" id="idea_teases_json" name="idea_teases_json" required>{html.escape(defaults.idea_teases_json)}</textarea>
+            <div class="hint">JSON object: industry bucket -> list of tease sentence templates.</div>
+          </details>
         </div>
       </section>
     </form>

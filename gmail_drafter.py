@@ -12,6 +12,7 @@ import logging
 import os
 import re
 import time
+from datetime import datetime
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from html.parser import HTMLParser
@@ -581,6 +582,289 @@ def get_recent_sent_recipients(hours: int = 48, max_results: int = 500) -> set[s
 
     logger.info(f"Recent sent recipients ({hours}h): {len(recipients)}")
     return recipients
+
+
+def _header_value(headers: list[dict], name: str) -> str:
+    lower = name.lower()
+    for header in headers or []:
+        if (header.get("name", "") or "").lower() == lower:
+            return header.get("value", "") or ""
+    return ""
+
+
+def _header_emails(headers: list[dict], names: list[str]) -> set[str]:
+    """
+    Extract normalized email addresses from one or more headers.
+    """
+    values = []
+    lookup = {n.lower() for n in names}
+    for header in headers or []:
+        if (header.get("name", "") or "").lower() in lookup:
+            values.append(header.get("value", "") or "")
+    parsed = email_lib.utils.getaddresses(values)
+    return {_normalize_email(addr) for _, addr in parsed if _normalize_email(addr)}
+
+
+def get_sent_history_for_recipient(email: str, days: int = 365, max_results: int = 8) -> list[dict]:
+    """
+    Fetch SENT messages to one recipient for dashboard history.
+    Returns newest-first list. Best-effort; returns [] on failure.
+    """
+    target = _normalize_email(email)
+    if not target:
+        return []
+    if days <= 0:
+        days = 30
+
+    service = _get_gmail_service()
+    query = f'in:sent to:"{target}" newer_than:{days}d'
+    try:
+        result = service.users().messages().list(
+            userId="me",
+            labelIds=["SENT"],
+            q=query,
+            maxResults=max_results,
+        ).execute()
+        stubs = result.get("messages", []) or []
+    except Exception as e:
+        logger.warning(f"Could not fetch sent history for {target}: {e}")
+        return []
+
+    history: list[dict] = []
+    for stub in stubs:
+        try:
+            msg = service.users().messages().get(
+                userId="me",
+                id=stub["id"],
+                format="full",
+            ).execute()
+        except Exception as e:
+            logger.warning(f"Could not fetch sent message {stub.get('id')}: {e}")
+            continue
+
+        payload = msg.get("payload", {}) or {}
+        headers = payload.get("headers", []) or []
+        subject = _header_value(headers, "Subject")
+        to_raw = _header_value(headers, "To")
+        date_raw = _header_value(headers, "Date")
+        snippet = msg.get("snippet", "") or ""
+
+        plain_text, html_text = _extract_body_from_payload(payload)
+        if plain_text:
+            body_text = plain_text.strip()
+        elif html_text:
+            body_text = _html_to_text(html_text).strip()
+        else:
+            body_text = ""
+
+        internal_ms = int(msg.get("internalDate", "0") or "0")
+        sent_at = (
+            datetime.fromtimestamp(internal_ms / 1000).isoformat()
+            if internal_ms
+            else ""
+        )
+
+        history.append({
+            "message_id": msg.get("id", ""),
+            "to": to_raw,
+            "subject": subject,
+            "date_header": date_raw,
+            "sent_at": sent_at,
+            "snippet": snippet,
+            "body_text": body_text[:6000],
+        })
+
+    return history
+
+
+def get_thread_history_for_recipient(
+    email: str,
+    days: int = 365,
+    max_threads: int = 10,
+    max_messages: int = 40,
+) -> list[dict]:
+    """
+    Fetch bidirectional Gmail thread messages with one recipient.
+    Returns newest-first messages across matching threads.
+    """
+    target = _normalize_email(email)
+    if not target:
+        return []
+    if days <= 0:
+        days = 365
+    if max_threads <= 0:
+        max_threads = 10
+    if max_messages <= 0:
+        max_messages = 40
+
+    service = _get_gmail_service()
+    query = f'in:anywhere (to:"{target}" OR from:"{target}") newer_than:{days}d'
+
+    try:
+        result = service.users().messages().list(
+            userId="me",
+            q=query,
+            maxResults=max(20, max_threads * 5),
+        ).execute()
+        stubs = result.get("messages", []) or []
+    except Exception as e:
+        logger.warning(f"Could not fetch thread history index for {target}: {e}")
+        return []
+
+    if not stubs:
+        return []
+
+    thread_ids = []
+    seen_threads = set()
+    for stub in stubs:
+        tid = (stub.get("threadId") or "").strip()
+        if not tid or tid in seen_threads:
+            continue
+        seen_threads.add(tid)
+        thread_ids.append(tid)
+        if len(thread_ids) >= max_threads:
+            break
+
+    history: list[dict] = []
+    for tid in thread_ids:
+        try:
+            thread = service.users().threads().get(
+                userId="me",
+                id=tid,
+                format="full",
+            ).execute()
+        except Exception as e:
+            logger.warning(f"Could not fetch Gmail thread {tid}: {e}")
+            continue
+
+        messages = thread.get("messages", []) or []
+        messages.sort(key=lambda m: int(m.get("internalDate", "0") or "0"))
+
+        for msg in messages:
+            payload = msg.get("payload", {}) or {}
+            headers = payload.get("headers", []) or []
+
+            from_raw = _header_value(headers, "From")
+            to_raw = _header_value(headers, "To")
+            subject = _header_value(headers, "Subject")
+            date_raw = _header_value(headers, "Date")
+            snippet = msg.get("snippet", "") or ""
+
+            from_emails = _header_emails(headers, ["From"])
+            recipient_emails = _header_emails(headers, ["To", "Cc", "Bcc"])
+            if target not in from_emails and target not in recipient_emails:
+                continue
+
+            direction = "received" if target in from_emails else "sent"
+            plain_text, html_text = _extract_body_from_payload(payload)
+            if plain_text:
+                body_text = plain_text.strip()
+            elif html_text:
+                body_text = _html_to_text(html_text).strip()
+            else:
+                body_text = ""
+
+            internal_ms = int(msg.get("internalDate", "0") or "0")
+            sent_at = (
+                datetime.fromtimestamp(internal_ms / 1000).isoformat()
+                if internal_ms
+                else ""
+            )
+
+            history.append({
+                "thread_id": tid,
+                "message_id": msg.get("id", ""),
+                "direction": direction,
+                "from": from_raw,
+                "to": to_raw,
+                "subject": subject,
+                "date_header": date_raw,
+                "sent_at": sent_at,
+                "snippet": snippet,
+                "body_text": body_text[:8000],
+            })
+            if len(history) >= max_messages:
+                break
+        if len(history) >= max_messages:
+            break
+
+    history.sort(
+        key=lambda item: item.get("sent_at", "") or item.get("date_header", ""),
+        reverse=True,
+    )
+    return history
+
+
+def get_recent_sent_activity(
+    hours: int = 24 * 30,
+    max_results: int = 120,
+    allowed_recipients: set[str] | None = None,
+) -> list[dict]:
+    """
+    Fetch recent SENT activity feed items.
+    Returns newest-first list of summary dicts. Best-effort; returns [] on failure.
+    """
+    if hours <= 0:
+        hours = 24
+    service = _get_gmail_service()
+    allowed = {_normalize_email(x) for x in (allowed_recipients or set()) if _normalize_email(x)}
+    days = _hours_to_newer_than_days(hours)
+    query = f"in:sent newer_than:{days}d"
+
+    try:
+        result = service.users().messages().list(
+            userId="me",
+            labelIds=["SENT"],
+            q=query,
+            maxResults=max_results,
+        ).execute()
+        stubs = result.get("messages", []) or []
+    except Exception as e:
+        logger.warning(f"Could not fetch sent activity: {e}")
+        return []
+
+    activity: list[dict] = []
+    for stub in stubs:
+        try:
+            msg = service.users().messages().get(
+                userId="me",
+                id=stub["id"],
+                format="metadata",
+                metadataHeaders=["To", "Subject", "Date"],
+            ).execute()
+        except Exception as e:
+            logger.warning(f"Could not fetch sent activity message {stub.get('id')}: {e}")
+            continue
+
+        payload = msg.get("payload", {}) or {}
+        headers = payload.get("headers", []) or []
+        to_raw = _header_value(headers, "To")
+        subject = _header_value(headers, "Subject")
+        date_raw = _header_value(headers, "Date")
+        snippet = msg.get("snippet", "") or ""
+        internal_ms = int(msg.get("internalDate", "0") or "0")
+        sent_at = (
+            datetime.fromtimestamp(internal_ms / 1000).isoformat()
+            if internal_ms
+            else ""
+        )
+
+        parsed = email_lib.utils.getaddresses([to_raw])
+        _, to_email = parsed[0] if parsed else ("", "")
+        to_email_norm = _normalize_email(to_email)
+        if allowed and to_email_norm not in allowed:
+            continue
+        activity.append({
+            "message_id": msg.get("id", ""),
+            "to_email": to_email_norm,
+            "to_raw": to_raw,
+            "subject": subject,
+            "date_header": date_raw,
+            "sent_at": sent_at,
+            "snippet": snippet,
+        })
+
+    return activity
 
 
 def _extract_company_from_subject(subject: str) -> str:

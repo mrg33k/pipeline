@@ -18,6 +18,7 @@ Options:
 """
 
 import argparse
+import json
 import logging
 import os
 import re
@@ -36,6 +37,7 @@ import research
 import email_writer
 import gmail_drafter
 import csv_export
+from dashboard_ui import launch_outreach_dashboard
 from preflight_ui import PreflightSettings, collect_preflight_settings
 
 
@@ -1005,6 +1007,7 @@ Examples:
   python3 run_pipeline.py --import contacts.csv    # import CSV then exit
   python3 run_pipeline.py --mode full --dry-run    # preview without creating drafts
   python3 run_pipeline.py --ui                     # launch sleek preflight UI
+  python3 run_pipeline.py --dashboard              # launch searchable outreach dashboard
         """,
     )
     parser.add_argument("--mode", choices=["full", "rewrite", "draft"], default="full",
@@ -1017,6 +1020,8 @@ Examples:
                         help="Preview emails without creating Gmail drafts")
     parser.add_argument("--ui", action="store_true",
                         help="Open preflight UI to set variable run options before starting")
+    parser.add_argument("--dashboard", action="store_true",
+                        help="Open outreach dashboard (search Apollo contacts, drafts, sent history)")
     args = parser.parse_args()
 
     log_file = setup_logging()
@@ -1024,6 +1029,14 @@ Examples:
 
     # Load contacts DB
     db = ContactsDB(config.CONTACTS_DB_PATH)
+
+    # ── Launch dashboard UI ─────────────────────────────────────────────
+    if args.dashboard:
+        banner("DASHBOARD")
+        print("Database status:")
+        print_db_stats(db)
+        launch_outreach_dashboard(db)
+        return
 
     # ── Handle CSV import ────────────────────────────────────────────────
     if args.import_csv:
@@ -1066,6 +1079,7 @@ Examples:
                 else "full"
             ),
             email_system_prompt=email_writer.SYSTEM_PROMPT,
+            idea_teases_json=json.dumps(email_writer.IDEA_TEASES, indent=2),
         )
         selected = collect_preflight_settings(defaults)
         if selected is None:
@@ -1081,6 +1095,7 @@ Examples:
         email_writer.SUBJECT_TEMPLATE = selected.subject_template
         email_writer.SUBJECT_COMPANY_MODE = selected.subject_company_mode
         email_writer.SYSTEM_PROMPT = selected.email_system_prompt
+        email_writer.IDEA_TEASES = json.loads(selected.idea_teases_json)
     else:
         # For rewrite mode, 0 means unlimited (handled inside mode_rewrite)
         if args.max == 0 and mode == "rewrite":
