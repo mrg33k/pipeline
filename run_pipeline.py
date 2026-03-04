@@ -656,8 +656,7 @@ def mode_rewrite(db, max_emails, dry_run, log_file, recent_window_hours: int | N
         new_email = email_writer.write_email(profile)
         new_body = new_email["body"]
 
-        # Subject line: always 'quick question' (simple, consistent)
-        new_subject = "quick question"
+        new_subject = new_email["subject"]
 
         # ── Print before/after comparison ──────────────────────────────
         print(f"\n--- DRAFT {i + 1} of {len(to_rewrite)} ---")
@@ -1058,6 +1057,12 @@ Examples:
             daily_focus="",
             daily_location="",
             recent_hours=config.RECENT_CONTACT_HOURS,
+            subject_template=email_writer.SUBJECT_TEMPLATE,
+            subject_company_mode=(
+                email_writer.SUBJECT_COMPANY_MODE
+                if email_writer.SUBJECT_COMPANY_MODE in {"full", "first_token"}
+                else "full"
+            ),
             email_system_prompt=email_writer.SYSTEM_PROMPT,
         )
         selected = collect_preflight_settings(defaults)
@@ -1071,6 +1076,8 @@ Examples:
         daily_focus = selected.daily_focus
         daily_location = selected.daily_location
         recent_window_hours = selected.recent_hours
+        email_writer.SUBJECT_TEMPLATE = selected.subject_template
+        email_writer.SUBJECT_COMPANY_MODE = selected.subject_company_mode
         email_writer.SYSTEM_PROMPT = selected.email_system_prompt
     else:
         # For rewrite mode, 0 means unlimited (handled inside mode_rewrite)

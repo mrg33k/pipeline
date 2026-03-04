@@ -93,6 +93,13 @@ RECENT_CONTACT_HOURS = _int_env("RECENT_CONTACT_HOURS", 48)
 # ── OpenAI ────────────────────────────────────────────────────────────────────
 OPENAI_MODEL = "gpt-4.1-mini"
 
+# ── Email Subject Controls ────────────────────────────────────────────────────
+# Empty template uses legacy auto-subject logic.
+# Supported placeholders when non-empty:
+#   {first_name}, {company_name}, {company_short}
+EMAIL_SUBJECT_TEMPLATE = os.environ.get("EMAIL_SUBJECT_TEMPLATE", "").strip()
+SUBJECT_COMPANY_MODE = os.environ.get("SUBJECT_COMPANY_MODE", "full").strip().lower() or "full"
+
 # ── Sender Info ───────────────────────────────────────────────────────────────
 SENDER_EMAIL = "hello@aom-inhouse.com"
 SENDER_NAME = "Patrik Matheson"

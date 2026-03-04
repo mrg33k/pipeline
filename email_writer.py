@@ -101,6 +101,15 @@ I had a couple ideas for you guys, but I didn't want to assume anything, so I th
 
 Best,"""
 
+SUBJECT_TEMPLATE = config.EMAIL_SUBJECT_TEMPLATE
+_raw_subject_company_mode = (config.SUBJECT_COMPANY_MODE or "full").strip().lower()
+SUBJECT_COMPANY_MODE = "first_token" if _raw_subject_company_mode in {
+    "first",
+    "first_word",
+    "first_name",
+    "first_token",
+} else "full"
+
 
 def write_email(profile: dict, opener_hint: str = "") -> dict:
     """
@@ -123,14 +132,9 @@ def write_email(profile: dict, opener_hint: str = "") -> dict:
     body = response.choices[0].message.content.strip()
     body = _normalize_trade_opener(body, profile)
 
-    # Use company name for subject only if it's short and natural
-    company = profile.get("company_name", "")
-    if company and len(company) <= 30 and company.upper() != company and not _is_abbreviation(company):
-        subject = f"quick question for {company}"
-    else:
-        first = profile.get("first_name", "")
-        subject = f"quick question for {first}" if first else "quick question"
+    subject = _build_subject(profile)
 
+    company = profile.get("company_name", "")
     logger.info(f"Email written for {profile.get('first_name', '?')} at {company}")
 
     return {
@@ -204,6 +208,69 @@ def _build_context(profile: dict) -> str:
         f"IMPORTANT: NEVER invent details beyond the verified fact.\n"
         f"Follow the formula exactly."
     )
+
+
+def _build_subject(profile: dict) -> str:
+    """Build subject using run-configurable template or legacy fallback logic."""
+    first_name = (profile.get("first_name") or "").strip()
+    company_name = (profile.get("company_name") or "").strip()
+    company_short = _first_business_name_token(company_name)
+    company_for_subject = _company_name_for_subject(company_name)
+
+    template = (SUBJECT_TEMPLATE or "").strip()
+    if template:
+        subject = template
+        replacements = {
+            "{first_name}": first_name or "there",
+            "{company_name}": company_for_subject,
+            "{company_short}": company_short or company_for_subject,
+            "{company}": company_for_subject,
+        }
+        for key, value in replacements.items():
+            subject = subject.replace(key, value)
+        subject = re.sub(r"\s{2,}", " ", subject).strip()
+        return subject or "quick question"
+
+    # Legacy fallback: prefer natural company names (respecting subject mode), otherwise recipient first name.
+    name_for_subject = company_for_subject or company_name
+    if (
+        name_for_subject
+        and len(name_for_subject) <= 30
+        and name_for_subject.upper() != name_for_subject
+        and not _is_abbreviation(name_for_subject)
+    ):
+        return f"quick question for {name_for_subject}"
+
+    return f"quick question for {first_name}" if first_name else "quick question"
+
+
+def _company_name_for_subject(company_name: str) -> str:
+    """
+    Resolve which company label to use in subject:
+    - full: original company name
+    - first_token: first meaningful token from the business name
+    """
+    mode = (SUBJECT_COMPANY_MODE or "full").strip().lower()
+    if mode in {"first", "first_word", "first_name", "first_token"}:
+        first_token = _first_business_name_token(company_name)
+        if first_token:
+            return first_token
+    return (company_name or "").strip()
+
+
+def _first_business_name_token(company_name: str) -> str:
+    """
+    Return first meaningful token from business name.
+    Example: "Francine Restaurant" -> "Francine".
+    """
+    tokens = re.findall(r"[A-Za-z0-9][A-Za-z0-9&'\-]*", company_name or "")
+    if not tokens:
+        return ""
+    for token in tokens:
+        if token.lower() in {"the", "a", "an"}:
+            continue
+        return token
+    return tokens[0]
 
 
 def _is_trade_fact(company_fact: str) -> bool:

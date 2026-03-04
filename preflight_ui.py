@@ -17,6 +17,8 @@ class PreflightSettings:
     daily_focus: str
     daily_location: str
     recent_hours: int
+    subject_template: str
+    subject_company_mode: str
     email_system_prompt: str
 
 
@@ -57,6 +59,11 @@ def _parse_form(defaults: PreflightSettings, body: bytes) -> PreflightSettings:
     if not prompt:
         raise ValueError("email_system_prompt cannot be empty")
 
+    subject_template = values.get("subject_template", [defaults.subject_template])[0].strip()
+    subject_company_mode = (values.get("subject_company_mode", [defaults.subject_company_mode])[0] or "").strip().lower()
+    if subject_company_mode not in {"full", "first_token"}:
+        raise ValueError("subject_company_mode must be one of: full, first_token")
+
     return PreflightSettings(
         mode=mode,
         max_emails=max_emails,
@@ -64,6 +71,8 @@ def _parse_form(defaults: PreflightSettings, body: bytes) -> PreflightSettings:
         daily_focus=(values.get("daily_focus", [defaults.daily_focus])[0] or "").strip(),
         daily_location=(values.get("daily_location", [defaults.daily_location])[0] or "").strip(),
         recent_hours=recent_hours,
+        subject_template=subject_template,
+        subject_company_mode=subject_company_mode,
         email_system_prompt=prompt,
     )
 
@@ -72,6 +81,8 @@ def _render_page(defaults: PreflightSettings, error: str = "") -> str:
     mode_full = "selected" if defaults.mode == "full" else ""
     mode_rewrite = "selected" if defaults.mode == "rewrite" else ""
     mode_draft = "selected" if defaults.mode == "draft" else ""
+    subject_company_full = "selected" if defaults.subject_company_mode == "full" else ""
+    subject_company_first_token = "selected" if defaults.subject_company_mode == "first_token" else ""
     checked_dry = "checked" if defaults.dry_run else ""
     error_block = f"<div class='error'>{html.escape(error)}</div>" if error else ""
 
@@ -248,6 +259,17 @@ def _render_page(defaults: PreflightSettings, error: str = "") -> str:
           <label for="daily_location">Location</label>
           <input id="daily_location" name="daily_location" type="text" value="{html.escape(defaults.daily_location)}" placeholder="e.g. AZ | Phoenix, AZ | Dallas, TX">
           <div class="hint">Use ';' for multiple locations.</div>
+
+          <label for="subject_template">Subject template</label>
+          <input id="subject_template" name="subject_template" type="text" value="{html.escape(defaults.subject_template)}" placeholder="e.g. quick question for {{company_short}}">
+          <div class="hint">Placeholders: {'{first_name}'}, {'{company_name}'}, {'{company_short}'}.</div>
+
+          <label for="subject_company_mode">Business name in subject</label>
+          <select id="subject_company_mode" name="subject_company_mode">
+            <option value="full" {subject_company_full}>full business name</option>
+            <option value="first_token" {subject_company_first_token}>first token only</option>
+          </select>
+          <div class="hint">Applies to {'{company_name}'}/{'{company_short}'} and fallback subject logic.</div>
 
           <label class="check"><input type="checkbox" name="dry_run" value="1" {checked_dry}> Dry run (no Gmail draft updates)</label>
 
