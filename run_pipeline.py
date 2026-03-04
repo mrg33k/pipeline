@@ -369,7 +369,7 @@ def mode_full(
         company_fact = ""
         website = (org.get("website_url", "") or "").strip()
         if website:
-            company_fact = research.get_company_fact(website)
+            company_fact = research.get_company_fact_sync(website)
             if company_fact:
                 logger.info(f"  Research fact: {company_fact}")
             else:
@@ -631,7 +631,7 @@ def mode_rewrite(db, max_emails, dry_run, log_file, recent_window_hours: int | N
         company_fact = ""
         website = _clean_text(apollo_org.get("website_url", ""))
         if website:
-            company_fact = research.get_company_fact(website)
+            company_fact = research.get_company_fact_sync(website)
             if company_fact:
                 logger.info(f"  Research fact: {company_fact}")
             else:

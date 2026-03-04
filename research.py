@@ -4,16 +4,17 @@ Lightweight company research utility.
 Given a website URL, extract one verified short fact about what the company does.
 """
 
+import asyncio
 import logging
 
+from crawl4ai import AsyncWebCrawler
 from openai import OpenAI
-from playwright.sync_api import sync_playwright
 
 logger = logging.getLogger(__name__)
 client = OpenAI()
 
 
-def get_company_fact(website_url: str) -> str:
+async def get_company_fact(website_url: str) -> str:
     """
     Return one short verified company fact, or "" on any failure.
     Never raises.
@@ -27,15 +28,9 @@ def get_company_fact(website_url: str) -> str:
 
     extracted_website_text = ""
     try:
-        with sync_playwright() as p:
-            browser = p.chromium.launch()
-            try:
-                page = browser.new_page()
-                page.goto(website_url, timeout=10000)
-                page.wait_for_load_state("networkidle", timeout=10000)
-                extracted_website_text = page.locator("body").inner_text()
-            finally:
-                browser.close()
+        async with AsyncWebCrawler() as crawler:
+            result = await crawler.arun(url=website_url)
+            extracted_website_text = result.markdown if result else ""
     except Exception as e:  # pylint: disable=broad-except
         logger.info(f"Website fetch failed for {website_url}: {e}")
         return ""
@@ -81,3 +76,11 @@ def get_company_fact(website_url: str) -> str:
         return ""
 
     return fact
+
+
+def get_company_fact_sync(website_url: str) -> str:
+    try:
+        return asyncio.run(get_company_fact(website_url))
+    except Exception as e:  # pylint: disable=broad-except
+        logger.info(f"Async research failed for {website_url}: {e}")
+        return ""

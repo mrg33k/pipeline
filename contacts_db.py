@@ -188,6 +188,21 @@ class ContactsDB:
             "csv_export": csv_path,
         })
 
+    def create_list(self, list_name: str, emails: list[str]):
+        """Create or replace a named list of contact emails."""
+        name = (list_name or "").strip()
+        if not name:
+            return
+        normalized = sorted({(e or "").strip().lower() for e in emails if (e or "").strip()})
+        lists = self.data.setdefault("lists", {})
+        lists[name] = {
+            "name": name,
+            "emails": normalized,
+            "count": len(normalized),
+            "created_at": datetime.now().isoformat(),
+        }
+        self.save()
+
     # ── CSV Import ───────────────────────────────────────────────────────
 
     def import_from_csv(self, csv_path: str) -> int:

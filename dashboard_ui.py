@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import json
+import os
+import queue
+import subprocess
 import threading
 import time
+import uuid
 import webbrowser
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -318,17 +322,10 @@ def _build_dashboard_payload(state: _DashboardState, fast: bool = False) -> dict
             sent_by_email[email] = sent
 
     contact_emails = {item.get("email", "") for item in contacts if item.get("email")}
-    contacts_by_email = {
-        (item.get("email") or "").strip().lower(): item
-        for item in contacts
-        if (item.get("email") or "").strip()
-    }
-    results: list[dict] = []
-
+    contacts_view: list[dict] = []
     for contact in contacts:
-        email = contact.get("email", "")
-        results.append({
-            "type": "contact",
+        email = (contact.get("email") or "").strip().lower()
+        contacts_view.append({
             "id": contact.get("id", ""),
             "name": contact.get("name", ""),
             "email": email,
@@ -337,48 +334,13 @@ def _build_dashboard_payload(state: _DashboardState, fast: bool = False) -> dict
             "industry": contact.get("industry", ""),
             "subject": contact.get("subject", ""),
             "latest_ts": contact.get("latest_ts", ""),
+            "added": contact.get("added", ""),
             "has_draft": email in drafts_by_email,
             "has_sent": email in sent_by_email,
         })
 
-    for draft in drafts:
-        email = draft.get("to_email", "")
-        contact = contacts_by_email.get(email, {})
-        results.append({
-            "type": "draft",
-            "id": draft.get("draft_id", ""),
-            "name": contact.get("name", "") or draft.get("to_name", "") or draft.get("first_name", "") or email,
-            "email": email,
-            "company": contact.get("company", "") or draft.get("company", ""),
-            "title": contact.get("title", ""),
-            "industry": contact.get("industry", ""),
-            "subject": draft.get("subject", ""),
-            "latest_ts": "",
-            "has_draft": True,
-            "has_sent": email in sent_by_email,
-        })
-
-    for email, sent in sent_by_email.items():
-        contact = contacts_by_email.get(email, {})
-        results.append({
-            "type": "sent",
-            "id": sent.get("message_id", ""),
-            "name": contact.get("name", "") or sent.get("to_raw", "") or email,
-            "email": email,
-            "company": contact.get("company", ""),
-            "title": contact.get("title", ""),
-            "industry": contact.get("industry", ""),
-            "subject": sent.get("subject", ""),
-            "latest_ts": sent.get("sent_at", ""),
-            "has_draft": email in drafts_by_email,
-            "has_sent": True,
-        })
-
-    results.sort(
-        key=lambda item: (
-            0 if item.get("has_sent") else 1,
-            _parse_iso(item.get("latest_ts", "")),
-        ),
+    contacts_view.sort(
+        key=lambda item: _parse_iso(item.get("latest_ts", "")),
         reverse=True,
     )
 
@@ -397,7 +359,9 @@ def _build_dashboard_payload(state: _DashboardState, fast: bool = False) -> dict
 
     return {
         "summary": summary,
-        "results": results[:350],
+        "contacts": contacts_view,
+        "drafts": drafts,
+        "sent_activity": sent_activity,
         "activity": activity[:120],
         "sent_access_error": sent_error,
         "contacts_error": contacts_error,
@@ -687,6 +651,80 @@ def _dashboard_page() -> str:
     .badge.recv { background: rgba(134,211,255,.12); border: 1px solid rgba(134,211,255,.45); color: #d2ecff; }
     .msg pre { background: #0b111b; border: 1px solid #1f2a3d; border-radius: 8px; padding: 8px; margin: 0; max-height: 220px; overflow: auto; color: #d2deee; white-space: pre-wrap; }
 
+    .row-head { display: flex; gap: 8px; align-items: center; }
+    .contact-select { margin: 0; accent-color: #86d3ff; }
+
+    .view-toggle { display: inline-flex; gap: 6px; }
+    .btn-toggle { background: #0f1623; }
+    .btn-toggle.active {
+      background: #e7eef9;
+      border-color: #d4deec;
+      color: #101825;
+      font-weight: 700;
+    }
+
+    .dashboard-view {
+      display: grid;
+      grid-template-rows: auto 1fr;
+      gap: 12px;
+      min-height: 0;
+    }
+
+    .actions-view {
+      display: none;
+      height: 100%;
+      min-height: 0;
+      overflow-y: auto;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: rgba(12,18,27,.84);
+      padding: 16px;
+    }
+    .actions-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 12px;
+    }
+    .action-card {
+      border: 1px solid #2a374d;
+      border-radius: 12px;
+      background: #0f1623;
+      padding: 14px;
+      display: grid;
+      gap: 10px;
+    }
+    .action-card h4 { margin: 0; font-size: 13px; }
+    .action-card p { margin: 0; color: var(--muted); font-size: 11px; }
+    .action-card input[type="number"],
+    .action-card input[type="text"] {
+      border: 1px solid #2f3f56;
+      border-radius: 8px;
+      background: #0c121b;
+      color: var(--ink);
+      padding: 8px 10px;
+      font: inherit;
+      outline: none;
+    }
+    .action-card .field { display: grid; gap: 6px; }
+    .action-card pre {
+      background: #0b111b;
+      border: 1px solid #1f2a3d;
+      border-radius: 8px;
+      padding: 8px;
+      margin: 0;
+      max-height: 220px;
+      overflow: auto;
+      color: #d2deee;
+      white-space: pre-wrap;
+      font-size: 11px;
+    }
+
+    .loader-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(9, 12, 18, 0.85); z-index: 9999; display: grid; place-items: center; }
+    .loader-content { display: flex; flex-direction: column; align-items: center; gap: 16px; }
+    .spinner { width: 48px; height: 48px; border: 5px solid #283447; border-bottom-color: #86d3ff; border-radius: 50%; display: inline-block; animation: rotation 1s linear infinite; }
+    @keyframes rotation { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    #loader-text { color: var(--muted); font-size: 14px; }
+
     @media (max-width: 1100px) {
       .content { grid-template-columns: 1fr; grid-template-rows: auto auto auto; height: auto; }
       .shell { height: auto; min-height: 100vh; }
@@ -697,6 +735,10 @@ def _dashboard_page() -> str:
   <div class=\"shell\">
     <div class=\"topbar\">
       <div class=\"title\">AOM Outreach Dashboard</div>
+      <div class=\"view-toggle\">
+        <button id=\"view-dashboard\" class=\"btn btn-toggle active\">Dashboard</button>
+        <button id=\"view-actions\" class=\"btn btn-toggle\">Actions</button>
+      </div>
       <div class=\"actions\" style=\"display:flex; gap:8px;\">
         <button id=\"refresh\" class=\"btn\">Sync Gmail</button>
         <button id=\"clear\" class=\"btn\">Clear</button>
@@ -704,43 +746,102 @@ def _dashboard_page() -> str:
     </div>
     <div id=\"sentWarn\" class=\"warn\"></div>
     <div id=\"errorBox\" class=\"errorbox\"></div>
-    <section id=\"stats\" class=\"stats\"></section>
-    <div class=\"content\">
-      <aside class=\"sidebar\">
-        <h3>Filters</h3>
-        <div id=\"search-container\" class=\"filter-block\">
-          <label for=\"search\">Search</label>
-          <input id=\"search\" placeholder=\"Search contacts, drafts, sent...\" />
-        </div>
-        <div id=\"status-filter-container\" class=\"filter-block\">
-          <label>Status</label>
-          <div id=\"status-chips\" class=\"chip-row\"></div>
-        </div>
-        <div id=\"industry-filter-container\" class=\"filter-block\">
-          <label for=\"industry-filter\">Industry</label>
-          <select id=\"industry-filter\"></select>
-        </div>
-        <div id=\"sort-container\" class=\"filter-block\">
-          <label>Sort</label>
-          <div id=\"sort-chips\" class=\"chip-row\"></div>
-        </div>
-      </aside>
-      <main class=\"contact-list-pane\">
-        <div class=\"pane-head\">
-          <h3>Contacts</h3>
-          <span id=\"results-count\" class=\"meta\"></span>
-        </div>
-        <div id=\"results\" class=\"list\"></div>
-      </main>
-      <aside class=\"detail-pane\">
-        <div class=\"pane-head\">
-          <div>
-            <h3 id=\"detail-name\">Select a contact</h3>
-            <div id=\"detail-meta\" class=\"meta\"></div>
+    <div id=\"dashboard-view\" class=\"dashboard-view\">
+      <section id=\"stats\" class=\"stats\"></section>
+      <div class=\"content\">
+        <aside class=\"sidebar\">
+          <h3>Filters</h3>
+          <div id=\"search-container\" class=\"filter-block\">
+            <label for=\"search\">Search</label>
+            <input id=\"search\" placeholder=\"Search contacts, drafts, sent...\" />
           </div>
+          <div id=\"status-filter-container\" class=\"filter-block\">
+            <label>Status</label>
+            <div id=\"status-chips\" class=\"chip-row\"></div>
+          </div>
+          <div id=\"industry-filter-container\" class=\"filter-block\">
+            <label for=\"industry-filter\">Industry</label>
+            <select id=\"industry-filter\"></select>
+          </div>
+          <div id=\"sort-container\" class=\"filter-block\">
+            <label>Sort</label>
+            <div id=\"sort-chips\" class=\"chip-row\"></div>
+          </div>
+          <div class=\"filter-block\">
+            <button id=\"create-list-btn\" class=\"btn\" disabled>Create List from Selection</button>
+          </div>
+        </aside>
+        <main class=\"contact-list-pane\">
+          <div class=\"pane-head\">
+            <h3>Contacts</h3>
+            <span id=\"results-count\" class=\"meta\"></span>
+          </div>
+          <div id=\"results\" class=\"list\"></div>
+        </main>
+        <aside class=\"detail-pane\">
+          <div class=\"pane-head\">
+            <div>
+              <h3 id=\"detail-name\">Select a contact</h3>
+              <div id=\"detail-meta\" class=\"meta\"></div>
+            </div>
+          </div>
+          <div id=\"detail-body\" class=\"detail-body\"></div>
+        </aside>
+      </div>
+    </div>
+    <div id=\"actions-view\" class=\"actions-view\">
+      <div class=\"actions-grid\">
+        <div class=\"action-card\">
+          <h4>Full Run</h4>
+          <p>Search, filter, enrich, write emails, and create drafts.</p>
+          <div class=\"field\">
+            <label>Max contacts</label>
+            <input id=\"full_run_max\" type=\"number\" value=\"25\" min=\"1\" />
+          </div>
+          <label><input id=\"full_run_dry\" type=\"checkbox\" /> Dry run</label>
+          <button class=\"btn run-action-btn\" data-action=\"full_run\">Run</button>
+          <pre id=\"full_run_logs\"></pre>
         </div>
-        <div id=\"detail-body\" class=\"detail-body\"></div>
-      </aside>
+        <div class=\"action-card\">
+          <h4>Rewrite Drafts</h4>
+          <p>Rewrite all existing outreach drafts.</p>
+          <div class=\"field\">
+            <label>Max contacts</label>
+            <input id=\"rewrite_max\" type=\"number\" value=\"0\" min=\"0\" />
+          </div>
+          <label><input id=\"rewrite_dry\" type=\"checkbox\" /> Dry run</label>
+          <button class=\"btn run-action-btn\" data-action=\"rewrite\">Run</button>
+          <pre id=\"rewrite_logs\"></pre>
+        </div>
+        <div class=\"action-card\">
+          <h4>Draft Remaining</h4>
+          <p>Create drafts for enriched contacts without drafts.</p>
+          <div class=\"field\">
+            <label>Max contacts</label>
+            <input id=\"draft_max\" type=\"number\" value=\"25\" min=\"1\" />
+          </div>
+          <label><input id=\"draft_dry\" type=\"checkbox\" /> Dry run</label>
+          <button class=\"btn run-action-btn\" data-action=\"draft\">Run</button>
+          <pre id=\"draft_logs\"></pre>
+        </div>
+        <div class=\"action-card\">
+          <h4>Import CSV</h4>
+          <p>Import contacts from a CSV file into the database.</p>
+          <div class=\"field\">
+            <label>CSV path</label>
+            <input id=\"import_csv_path\" type=\"text\" placeholder=\"/path/to/contacts.csv\" />
+          </div>
+          <label><input id=\"import_dry\" type=\"checkbox\" /> Dry run</label>
+          <button class=\"btn run-action-btn\" data-action=\"import\">Run</button>
+          <pre id=\"import_logs\"></pre>
+        </div>
+      </div>
+    </div>
+    <div id=\"loader\" class=\"loader-overlay\" style=\"display: none;\">
+      <div class=\"loader-content\">
+        <div class=\"spinner\"></div>
+        <div id=\"loader-text\">Loading...</div>
+      </div>
     </div>
   </div>
   <script src=\"/static/dashboard.js\"></script>
@@ -757,24 +858,38 @@ const state = {
   industryFilter: "all",
   statusFilter: "all",
   sortBy: "latest_activity",
+  selectedContacts: new Set(),
+  view: "dashboard",
 };
 
 let allData = {
   summary: {},
-  results: [],
-  activity: [],
+  contacts: [],
+  drafts: [],
+  sent_activity: [],
   sent_access_error: "",
   contacts_error: "",
 };
 
 const byId = (id) => document.getElementById(id);
-const esc = (v) => (v || "").replace(/[&<>"']/g, (ch) => ({
+const esc = (v) => String(v || "").replace(/[&<>"']/g, (ch) => ({
   "&": "&amp;",
   "<": "&lt;",
   ">": "&gt;",
   '"': "&quot;",
   "'": "&#39;",
 }[ch]));
+
+const safeFetch = (url, opts) => fetch(url, opts).catch((err) => { throw err; });
+
+function showLoader(text = "Loading...") {
+  byId("loader-text").textContent = text;
+  byId("loader").style.display = "grid";
+}
+
+function hideLoader() {
+  byId("loader").style.display = "none";
+}
 
 function debounce(fn, delayMs) {
   let timer = null;
@@ -808,7 +923,7 @@ function matchQuery(item, q) {
 }
 
 function getFilteredResults() {
-  const items = Array.isArray(allData.results) ? allData.results : [];
+  const items = Array.isArray(allData.contacts) ? allData.contacts : [];
   const q = (state.q || "").trim().toLowerCase();
   const industryFilter = (state.industryFilter || "all").toLowerCase();
   const statusFilter = state.statusFilter || "all";
@@ -836,12 +951,8 @@ function getFilteredResults() {
   }
 
   const sorter = (a, b) => {
-    const tsA = a.latest_ts || "";
-    const tsB = b.latest_ts || "";
-    if (sortBy === "date_added") {
-      return tsA < tsB ? 1 : tsA > tsB ? -1 : 0;
-    }
-    // latest_activity default
+    const tsA = sortBy === "date_added" ? (a.added || a.latest_ts || "") : (a.latest_ts || "");
+    const tsB = sortBy === "date_added" ? (b.added || b.latest_ts || "") : (b.latest_ts || "");
     return tsA < tsB ? 1 : tsA > tsB ? -1 : 0;
   };
 
@@ -850,19 +961,32 @@ function getFilteredResults() {
 
 function renderStats(summary) {
   const cards = [
-    ["Apollo Contacts", summary.apollo_contacts],
-    ["Enriched", summary.enriched_contacts],
-    ["Drafted", summary.drafted_contacts],
-    ["Gmail Drafts", summary.outreach_drafts],
-    ["Sent (All-Time)", summary.sent_messages_window],
-    ["Unique Sent", summary.sent_unique_recipients],
+    { label: "Apollo Contacts", value: summary.apollo_contacts, filterKey: "status", filterValue: "all" },
+    { label: "Enriched", value: summary.enriched_contacts, filterKey: "status", filterValue: "all" },
+    { label: "Drafted", value: summary.drafted_contacts, filterKey: "status", filterValue: "drafted" },
+    { label: "Gmail Drafts", value: summary.outreach_drafts, filterKey: "status", filterValue: "drafted" },
+    { label: "Sent (All-Time)", value: summary.sent_messages_window, filterKey: "status", filterValue: "sent" },
+    { label: "Unique Sent", value: summary.sent_unique_recipients, filterKey: "status", filterValue: "sent" },
   ];
-  byId("stats").innerHTML = cards.map(([label, value]) => `
-    <div class="stat">
-      <div class="label">${esc(label)}</div>
-      <div class="value">${esc(String(value ?? 0))}</div>
+  const statsNode = byId("stats");
+  statsNode.innerHTML = cards.map((card) => `
+    <div class="stat" data-filter-key="${esc(card.filterKey)}" data-filter-value="${esc(card.filterValue)}">
+      <div class="label">${esc(card.label)}</div>
+      <div class="value">${esc(String(card.value ?? 0))}</div>
     </div>
   `).join("");
+  [...statsNode.querySelectorAll(".stat")].forEach((node) => {
+    node.addEventListener("click", () => {
+      const key = node.dataset.filterKey || "";
+      const value = node.dataset.filterValue || "";
+      if (!key) return;
+      if (key === "status") {
+        state.statusFilter = value || "all";
+        renderStatusChips();
+        renderFilteredData();
+      }
+    });
+  });
 }
 
 function renderStatusChips() {
@@ -891,7 +1015,7 @@ function renderIndustryOptions() {
   const select = byId("industry-filter");
   if (!select) return;
   const options = new Set();
-  (allData.results || []).forEach((item) => {
+  (allData.contacts || []).forEach((item) => {
     const v = (item.industry || "").trim();
     if (v) options.add(v);
   });
@@ -938,15 +1062,23 @@ function renderResults(items) {
   if (countNode) countNode.textContent = `${items.length} result${items.length === 1 ? "" : "s"}`;
   if (!items.length) {
     resultsNode.innerHTML = '<div class="meta">No matches</div>';
+    state.selectedContacts = new Set();
+    syncCreateListButton();
     return;
   }
+  const validEmails = new Set(items.map((item) => item.email).filter(Boolean));
+  state.selectedContacts = new Set([...state.selectedContacts].filter((email) => validEmails.has(email)));
   resultsNode.innerHTML = items.map((item) => {
     const active = state.selectedEmail && item.email === state.selectedEmail ? "active" : "";
     const dot = statusDotClass(item);
+    const checked = state.selectedContacts.has(item.email) ? "checked" : "";
     return `
       <div class="row ${active}" data-email="${esc(item.email)}">
         <div class="line">
-          <div class="name">${esc(item.name || item.email || "(unknown)")}</div>
+          <div class="row-head">
+            <input type="checkbox" class="contact-select" data-email="${esc(item.email)}" ${checked} />
+            <div class="name">${esc(item.name || item.email || "(unknown)")}</div>
+          </div>
           <div class="meta">${esc(fmtTs(item.latest_ts))}</div>
         </div>
         <div class="line">
@@ -965,6 +1097,21 @@ function renderResults(items) {
       loadHistory(state.selectedEmail);
     });
   });
+
+  [...resultsNode.querySelectorAll(".contact-select")].forEach((checkbox) => {
+    checkbox.addEventListener("click", (e) => e.stopPropagation());
+    checkbox.addEventListener("change", (e) => {
+      const email = e.currentTarget.dataset.email || "";
+      if (!email) return;
+      if (e.currentTarget.checked) {
+        state.selectedContacts.add(email);
+      } else {
+        state.selectedContacts.delete(email);
+      }
+      syncCreateListButton();
+    });
+  });
+  syncCreateListButton();
 }
 
 function showError(message) {
@@ -976,6 +1123,12 @@ function showError(message) {
   }
   box.style.display = "block";
   box.textContent = message;
+}
+
+function syncCreateListButton() {
+  const btn = byId("create-list-btn");
+  if (!btn) return;
+  btn.disabled = state.selectedContacts.size === 0;
 }
 
 function renderDetail(payload) {
@@ -1079,7 +1232,7 @@ function renderFilteredData({ allowHistory = true } = {}) {
 
 async function fetchPayload(fast) {
   const qs = new URLSearchParams({ fast: fast ? "1" : "0" });
-  const res = await fetch(`/api/data?${qs.toString()}`);
+  const res = await safeFetch(`/api/data?${qs.toString()}`);
   if (!res.ok) throw new Error(`Dashboard API error (${res.status})`);
   return res.json();
 }
@@ -1087,8 +1240,9 @@ async function fetchPayload(fast) {
 function renderPayload(payload, { allowHistory = true } = {}) {
   allData = {
     summary: payload.summary || {},
-    results: payload.results || [],
-    activity: payload.activity || [],
+    contacts: payload.contacts || [],
+    drafts: payload.drafts || [],
+    sent_activity: payload.sent_activity || [],
     sent_access_error: payload.sent_access_error || "",
     contacts_error: payload.contacts_error || "",
   };
@@ -1118,19 +1272,13 @@ async function loadData({ withGmail = false } = {}) {
   state._lastReqId = reqId;
   showError("");
   byId("results").innerHTML = '<div class="meta">Loading contacts...</div>';
+  showLoader("Syncing Apollo contacts...");
   try {
     const fastPayload = await fetchPayload(true);
     if (state._lastReqId !== reqId) return;
     renderPayload(fastPayload, { allowHistory: false });
-  } catch (err) {
-    const msg = (err && err.message) ? err.message : "Failed to load dashboard data.";
-    showError(msg);
-    return;
-  }
-
-  if (!withGmail) return;
-
-  try {
+    if (!withGmail) return;
+    showLoader("Syncing Gmail data...");
     const fullPayload = await fetchPayload(false);
     if (state._lastReqId !== reqId) return;
     renderPayload(fullPayload, { allowHistory: true });
@@ -1138,20 +1286,93 @@ async function loadData({ withGmail = false } = {}) {
     const msg = (err && err.message) ? err.message : "Failed to load Gmail-backed activity.";
     showError(msg);
     if (state.selectedEmail) loadHistory(state.selectedEmail);
+  } finally {
+    hideLoader();
   }
 }
 
 async function loadHistory(email) {
   if (!email) return;
+  showLoader("Loading contact history...");
   try {
     const qs = new URLSearchParams({ email });
-    const res = await fetch(`/api/history?${qs.toString()}`);
+    const res = await safeFetch(`/api/history?${qs.toString()}`);
     if (!res.ok) throw new Error(`History API error (${res.status})`);
     const payload = await res.json();
     renderDetail(payload);
   } catch (err) {
     const msg = (err && err.message) ? err.message : "Failed to load contact history.";
     byId("detail-body").innerHTML = `<div class="meta">${esc(msg)}</div>`;
+  } finally {
+    hideLoader();
+  }
+}
+
+function setView(view) {
+  state.view = view;
+  const dashboard = byId("dashboard-view");
+  const actions = byId("actions-view");
+  if (dashboard && actions) {
+    dashboard.style.display = view === "dashboard" ? "grid" : "none";
+    actions.style.display = view === "actions" ? "block" : "none";
+  }
+  byId("view-dashboard").classList.toggle("active", view === "dashboard");
+  byId("view-actions").classList.toggle("active", view === "actions");
+}
+
+function appendLog(logId, line) {
+  const node = byId(logId);
+  if (!node) return;
+  node.textContent += `${line}\n`;
+  node.scrollTop = node.scrollHeight;
+}
+
+async function runAction(action) {
+  const config = {
+    full_run: { endpoint: "/api/actions/full_run", maxId: "full_run_max", dryId: "full_run_dry", logsId: "full_run_logs" },
+    rewrite: { endpoint: "/api/actions/rewrite", maxId: "rewrite_max", dryId: "rewrite_dry", logsId: "rewrite_logs" },
+    draft: { endpoint: "/api/actions/draft", maxId: "draft_max", dryId: "draft_dry", logsId: "draft_logs" },
+    import: { endpoint: "/api/actions/import", maxId: null, dryId: "import_dry", logsId: "import_logs", csvId: "import_csv_path" },
+  }[action];
+  if (!config) return;
+
+  const payload = {};
+  if (config.maxId) {
+    const raw = parseInt(byId(config.maxId).value || "0", 10);
+    payload.max_contacts = Number.isNaN(raw) ? 0 : raw;
+  }
+  if (config.csvId) {
+    payload.csv_path = (byId(config.csvId).value || "").trim();
+  }
+  payload.dry_run = !!byId(config.dryId).checked;
+
+  const logsNode = byId(config.logsId);
+  if (logsNode) logsNode.textContent = "";
+
+  try {
+    const res = await safeFetch(config.endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) {
+      throw new Error(data.error || "Action failed to start.");
+    }
+    const runId = data.run_id;
+    const es = new EventSource(`/api/action_logs?run_id=${encodeURIComponent(runId)}`);
+    es.onmessage = (event) => {
+      appendLog(config.logsId, event.data || "");
+    };
+    es.addEventListener("END", () => {
+      es.close();
+    });
+    es.onerror = () => {
+      es.close();
+    };
+  } catch (err) {
+    const msg = (err && err.message) ? err.message : "Failed to start action.";
+    showError(msg);
   }
 }
 
@@ -1168,7 +1389,7 @@ byId("refresh").addEventListener("click", async (e) => {
   button.disabled = true;
   button.textContent = "Syncing...";
   try {
-    await fetch("/api/refresh", { method: "POST" });
+    await safeFetch("/api/refresh", { method: "POST" });
     await loadData({ withGmail: true });
   } finally {
     button.disabled = false;
@@ -1182,6 +1403,7 @@ byId("clear").addEventListener("click", () => {
   state.industryFilter = "all";
   state.statusFilter = "all";
   state.sortBy = "latest_activity";
+  state.selectedContacts = new Set();
   byId("search").value = "";
   const ind = byId("industry-filter");
   if (ind) ind.value = "all";
@@ -1195,9 +1417,43 @@ byId("industry-filter").addEventListener("change", (e) => {
   renderFilteredData();
 });
 
+byId("create-list-btn").addEventListener("click", async () => {
+  const name = prompt("List name?");
+  if (!name) return;
+  const emails = [...state.selectedContacts];
+  try {
+    const res = await safeFetch("/api/create_list", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ list_name: name, emails }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) {
+      throw new Error(data.error || "Failed to create list.");
+    }
+    alert("List created.");
+    state.selectedContacts = new Set();
+    renderFilteredData();
+  } catch (err) {
+    const msg = (err && err.message) ? err.message : "Failed to create list.";
+    showError(msg);
+  }
+});
+
+byId("view-dashboard").addEventListener("click", () => setView("dashboard"));
+byId("view-actions").addEventListener("click", () => setView("actions"));
+
+[...document.querySelectorAll(".run-action-btn")].forEach((btn) => {
+  btn.addEventListener("click", () => {
+    const action = btn.dataset.action || "";
+    runAction(action);
+  });
+});
+
 renderStatusChips();
 renderSortChips();
-loadData({ withGmail: false });
+setView("dashboard");
+loadData({ withGmail: true });
 """
 
 
@@ -1209,6 +1465,64 @@ def launch_outreach_dashboard(db) -> None:
     - Combined activity feed
     """
     state = _DashboardState(db)
+
+    class ActionManager:
+        def __init__(self):
+            self._lock = threading.Lock()
+            self.current: dict | None = None
+
+        def start(self, cmd: list[str]) -> tuple[str | None, str | None]:
+            with self._lock:
+                if self.current and self.current.get("running"):
+                    return None, "Another action is already running."
+                run_id = uuid.uuid4().hex
+                log_queue: queue.Queue[str] = queue.Queue()
+                process = subprocess.Popen(
+                    cmd,
+                    cwd=os.path.dirname(__file__),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    bufsize=1,
+                )
+                self.current = {
+                    "run_id": run_id,
+                    "queue": log_queue,
+                    "process": process,
+                    "running": True,
+                }
+
+                thread = threading.Thread(
+                    target=self._pump_logs,
+                    args=(run_id, process, log_queue),
+                    daemon=True,
+                )
+                thread.start()
+                self.current["thread"] = thread
+                return run_id, None
+
+        def _pump_logs(self, run_id: str, process: subprocess.Popen, log_queue: queue.Queue):
+            try:
+                if process.stdout:
+                    for line in process.stdout:
+                        log_queue.put(line.rstrip("\n"))
+            finally:
+                try:
+                    process.wait(timeout=1)
+                except Exception:  # pylint: disable=broad-except
+                    pass
+                log_queue.put("__END__")
+                with self._lock:
+                    if self.current and self.current.get("run_id") == run_id:
+                        self.current["running"] = False
+
+        def get_queue(self, run_id: str) -> queue.Queue | None:
+            with self._lock:
+                if self.current and self.current.get("run_id") == run_id:
+                    return self.current.get("queue")
+            return None
+
+    action_manager = ActionManager()
 
     class Handler(BaseHTTPRequestHandler):
         def _json(self, payload: dict, status: int = 200):
@@ -1226,6 +1540,13 @@ def launch_outreach_dashboard(db) -> None:
             self.send_header("Content-Length", str(len(raw)))
             self.end_headers()
             self.wfile.write(raw)
+
+        def _read_json(self) -> dict:
+            length = int(self.headers.get("Content-Length", "0") or 0)
+            raw = self.rfile.read(length) if length else b"{}"
+            if not raw:
+                return {}
+            return json.loads(raw.decode("utf-8"))
 
         def do_GET(self):
             parsed = urlparse(self.path)
@@ -1256,6 +1577,35 @@ def launch_outreach_dashboard(db) -> None:
                     payload = _build_history_payload(state, email=email)
                     self._json(payload)
                     return
+                if parsed.path == "/api/action_logs":
+                    qs = parse_qs(parsed.query)
+                    run_id = (qs.get("run_id", [""])[0] or "").strip()
+                    if not run_id:
+                        self._json({"error": "run_id is required"}, status=400)
+                        return
+                    log_queue = action_manager.get_queue(run_id)
+                    if not log_queue:
+                        self._json({"error": "no active run"}, status=404)
+                        return
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/event-stream")
+                    self.send_header("Cache-Control", "no-cache")
+                    self.send_header("Connection", "keep-alive")
+                    self.end_headers()
+                    try:
+                        while True:
+                            line = log_queue.get()
+                            if line == "__END__":
+                                self.wfile.write(b"event: END\n")
+                                self.wfile.write(b"data: END\n\n")
+                                self.wfile.flush()
+                                break
+                            payload = f"data: {line}\n\n".encode("utf-8")
+                            self.wfile.write(payload)
+                            self.wfile.flush()
+                    except (BrokenPipeError, ConnectionResetError):
+                        return
+                    return
 
                 self.send_response(404)
                 self.end_headers()
@@ -1264,13 +1614,59 @@ def launch_outreach_dashboard(db) -> None:
 
         def do_POST(self):
             parsed = urlparse(self.path)
-            if parsed.path == "/api/refresh":
-                state.clear_cache()
-                self._json({"ok": True})
-                return
+            try:
+                if parsed.path == "/api/refresh":
+                    state.clear_cache()
+                    self._json({"ok": True})
+                    return
+                if parsed.path == "/api/create_list":
+                    payload = self._read_json()
+                    list_name = (payload.get("list_name") or "").strip()
+                    emails = payload.get("emails") or []
+                    if not list_name or not isinstance(emails, list):
+                        self._json({"ok": False, "error": "Invalid list payload."}, status=400)
+                        return
+                    db.create_list(list_name, emails)
+                    self._json({"ok": True})
+                    return
+                if parsed.path.startswith("/api/actions/"):
+                    action = parsed.path.rsplit("/", 1)[-1]
+                    payload = self._read_json()
+                    max_contacts = int(payload.get("max_contacts") or 0)
+                    dry_run = bool(payload.get("dry_run"))
+                    csv_path = (payload.get("csv_path") or "").strip()
+                    cmd: list[str] = ["python3", "run_pipeline.py"]
+                    if action == "full_run":
+                        cmd += ["--mode", "full"]
+                    elif action == "rewrite":
+                        cmd += ["--mode", "rewrite"]
+                    elif action == "draft":
+                        cmd += ["--mode", "draft"]
+                    elif action == "import":
+                        if not csv_path:
+                            self._json({"ok": False, "error": "CSV path is required."}, status=400)
+                            return
+                        cmd += ["--import", csv_path]
+                    else:
+                        self._json({"ok": False, "error": "Unknown action."}, status=400)
+                        return
 
-            self.send_response(404)
-            self.end_headers()
+                    if max_contacts > 0:
+                        cmd += ["--max", str(max_contacts)]
+                    if dry_run:
+                        cmd += ["--dry-run"]
+
+                    run_id, err = action_manager.start(cmd)
+                    if err:
+                        self._json({"ok": False, "error": err}, status=409)
+                        return
+                    self._json({"ok": True, "run_id": run_id})
+                    return
+
+                self.send_response(404)
+                self.end_headers()
+            except Exception as e:  # pylint: disable=broad-except
+                self._json({"ok": False, "error": str(e)}, status=500)
 
         def log_message(self, format, *args):  # pylint: disable=redefined-builtin
             return
